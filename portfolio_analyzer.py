@@ -19,7 +19,7 @@ DATASET_FOLDER = "datasets"
 REPORTS_FOLDER = "reports"
 
 # Required columns in CSV files
-REQUIRED_COLUMNS = ["Symbol", "Date", "Ex. date", "Profit", "Cum. Profit"]
+REQUIRED_COLUMNS = ["Symbol", "Date", "Ex. date", "Profit"]
 
 
 def validate_csv_file(filepath):
@@ -28,10 +28,12 @@ def validate_csv_file(filepath):
         df = pd.read_csv(filepath, nrows=1)
         missing_cols = [col for col in REQUIRED_COLUMNS if col not in df.columns]
         if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
+            raise ValueError(
+                f"{filepath.name} missing required columns: {missing_cols}"
+            )
         return True
     except Exception as e:
-        raise ValueError(f"Error validating {filepath.name}: {str(e)}")
+        raise ValueError(f"Failed to read {filepath.name}: {str(e)}")
 
 
 def load_strategy_data(filepath):
@@ -49,7 +51,7 @@ def load_strategy_data(filepath):
         df["Strategy"] = strategy_name
 
         # Keep only relevant columns
-        df = df[["Strategy", "Symbol", "Date", "Ex. date", "Profit", "Cum. Profit"]]
+        df = df[["Strategy", "Symbol", "Date", "Ex. date", "Profit"]]
 
         return df
 
@@ -91,34 +93,29 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
     gross_loss = abs(losses["Profit"].sum()) if n_losses > 0 else 1
     profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
 
-    # Build equity curve for drawdown analysis
+    # Build equity curve
     if equity_curve is None:
-        if strategy_name:
-            # For individual strategy, use its cumulative profit
-            strat_trades = trades.sort_values("Ex. date")
-            equity = INITIAL_CAPITAL + strat_trades["Cum. Profit"].values
-        else:
-            # For combined, we need to build it from all trades
-            combined_trades = trades.sort_values("Ex. date")
-            cum_profit = combined_trades["Profit"].cumsum()
-            equity = INITIAL_CAPITAL + cum_profit.values
+        equity_df = build_equity_curve(trades_df, strategy_name)
+        equity = equity_df["Equity"].values
     else:
         equity = equity_curve
-
     # Max Drawdown calculation
     peak = np.maximum.accumulate(equity)
     drawdown = equity - peak
     max_dd = drawdown.min()
     max_dd_idx = np.argmin(drawdown)
+
     # Calculate drawdown as % of deployed capital ($100k), not peak equity
     max_dd_pct = (max_dd / INITIAL_CAPITAL) * 100
 
-    # Recovery Time (days from max drawdown to recovery)
+    # Recovery Time (calendar days from max drawdown to recovery)
     recovery_days = np.nan
     if max_dd_idx < len(equity) - 1:
         recovery_idx = np.where(equity[max_dd_idx:] >= peak[max_dd_idx])[0]
         if len(recovery_idx) > 0:
-            recovery_days = recovery_idx[0]
+            trough_date = trades["Ex. date"].iloc[max_dd_idx]
+            recovery_date = trades["Ex. date"].iloc[max_dd_idx + recovery_idx[0]]
+            recovery_days = (recovery_date - trough_date).days
 
     # CAGR calculation
     start_date = trades["Ex. date"].min()
@@ -130,13 +127,20 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
         (((final_value / INITIAL_CAPITAL) ** (1 / years)) - 1) * 100 if years > 0 else 0
     )
 
+    # Recovery Factor (total profit / max drawdown)
+    recovery_factor = (total_profit / abs(max_dd)) if max_dd != 0 else np.nan
+
+    # Annualized Recovery Factor (normalize by years)
+    recovery_factor_per_year = (recovery_factor / years) if years > 0 else np.nan
+
     return {
         "Strategy": strategy_name if strategy_name else "COMBINED",
         "Total Return $": total_profit,
         "Total Return %": (total_profit / INITIAL_CAPITAL) * 100,
         "CAGR %": cagr,
         "Max Drawdown $": max_dd,
-        "Max Drawdown %": max_dd_pct,
+        "Drawdown % Peak": (abs(max_dd) / peak[max_dd_idx]) * 100,
+        "Drawdown % Initial": (abs(max_dd) / INITIAL_CAPITAL) * 100,
         "Recovery Days": recovery_days,
         "Win Rate %": win_rate * 100,
         "Avg Win $": avg_win,
@@ -149,7 +153,27 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
         "Start Date": start_date.strftime("%Y-%m-%d"),
         "End Date": end_date.strftime("%Y-%m-%d"),
         "Days": days,
+        "Recovery Factor": recovery_factor,
+        "Recovery Factor / Year": recovery_factor_per_year,
     }
+
+
+def build_equity_curve(trades_df, strategy_name=None, initial_capital=INITIAL_CAPITAL):
+    """Return equity curve DataFrame for a strategy or combined portfolio."""
+    if strategy_name:
+        trades = trades_df[trades_df["Strategy"] == strategy_name].copy()
+    else:
+        trades = trades_df.copy()
+
+    trades = trades.sort_values("Ex. date").reset_index(drop=True)
+    trades["Cum_Profit"] = trades["Profit"].cumsum()
+    equity_curve = pd.DataFrame(
+        {
+            "Exit_Date": trades["Ex. date"],
+            "Equity": initial_capital + trades["Cum_Profit"],
+        }
+    )
+    return equity_curve
 
 
 def find_top_drawdowns(equity_curve_df, n=3):
@@ -161,9 +185,7 @@ def find_top_drawdowns(equity_curve_df, n=3):
     # Calculate running peak and drawdown
     peak = np.maximum.accumulate(equity)
     drawdown = equity - peak
-    drawdown_pct = (drawdown / peak) * 100
 
-    # Find all drawdown periods
     drawdowns = []
     in_drawdown = False
     dd_start_idx = 0
@@ -177,19 +199,19 @@ def find_top_drawdowns(equity_curve_df, n=3):
                 dd_start_idx = i
                 dd_peak_value = equity[i]
 
-        # During drawdown, track the lowest point
+        # During drawdown
         elif in_drawdown:
-            # Check if we've recovered (back to peak level)
             if equity[i] >= dd_peak_value:
-                # Drawdown has ended
-                # Find the trough (lowest point)
+                # Drawdown ended
                 dd_segment = equity[dd_start_idx:i]
                 dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
                 dd_trough_value = equity[dd_trough_idx]
 
-                dd_amount = dd_trough_value - dd_peak_value
-                # Calculate as % of deployed capital, not peak value
-                dd_pct = (dd_amount / INITIAL_CAPITAL) * 100
+                dd_amount = dd_peak_value - dd_trough_value
+                dd_pct_peak = (dd_amount / dd_peak_value) * 100  # standard convention
+                dd_pct_initial = (
+                    dd_amount / INITIAL_CAPITAL
+                ) * 100  # your current style
 
                 days_to_trough = dd_trough_idx - dd_start_idx
                 days_to_recovery = i - dd_trough_idx
@@ -203,7 +225,8 @@ def find_top_drawdowns(equity_curve_df, n=3):
                         "Peak Value": dd_peak_value,
                         "Trough Value": dd_trough_value,
                         "Drawdown $": dd_amount,
-                        "Drawdown %": dd_pct,
+                        "Drawdown % Peak": dd_pct_peak,
+                        "Drawdown % Initial": dd_pct_initial,
                         "Days to Trough": days_to_trough,
                         "Days to Recovery": days_to_recovery,
                         "Total Days": total_days,
@@ -218,9 +241,9 @@ def find_top_drawdowns(equity_curve_df, n=3):
         dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
         dd_trough_value = equity[dd_trough_idx]
 
-        dd_amount = dd_trough_value - dd_peak_value
-        # Calculate as % of deployed capital, not peak value
-        dd_pct = (dd_amount / INITIAL_CAPITAL) * 100
+        dd_amount = dd_peak_value - dd_trough_value
+        dd_pct_peak = (dd_amount / dd_peak_value) * 100
+        dd_pct_initial = (dd_amount / INITIAL_CAPITAL) * 100
 
         days_to_trough = dd_trough_idx - dd_start_idx
 
@@ -228,36 +251,28 @@ def find_top_drawdowns(equity_curve_df, n=3):
             {
                 "Peak Date": dates[dd_start_idx],
                 "Trough Date": dates[dd_trough_idx],
-                "Recovery Date": None,  # Not yet recovered
+                "Recovery Date": None,
                 "Peak Value": dd_peak_value,
                 "Trough Value": dd_trough_value,
                 "Drawdown $": dd_amount,
-                "Drawdown %": dd_pct,
+                "Drawdown % Peak": dd_pct_peak,
+                "Drawdown % Initial": dd_pct_initial,
                 "Days to Trough": days_to_trough,
                 "Days to Recovery": None,
                 "Total Days": None,
             }
         )
 
-    # Sort by drawdown magnitude and take top N
-    drawdowns_sorted = sorted(drawdowns, key=lambda x: x["Drawdown $"])
+    # Sort by magnitude and take top N
+    drawdowns_sorted = sorted(drawdowns, key=lambda x: x["Drawdown $"], reverse=True)
     return drawdowns_sorted[:n]
 
 
 def find_strategy_drawdowns(all_trades, strategy_name, n=3):
     """Find top N drawdowns for a specific strategy"""
 
-    strategy_trades = all_trades[all_trades["Strategy"] == strategy_name].copy()
-    strategy_trades = strategy_trades.sort_values("Ex. date").reset_index(drop=True)
-
-    # Build equity curve for this strategy
-    strategy_trades["Cum_Profit"] = strategy_trades["Profit"].cumsum()
-    equity_curve = pd.DataFrame(
-        {
-            "Exit_Date": strategy_trades["Ex. date"],
-            "Equity": INITIAL_CAPITAL + strategy_trades["Cum_Profit"],
-        }
-    )
+    # Build equity curve using the shared helper
+    equity_curve = build_equity_curve(all_trades, strategy_name)
 
     # Use existing find_top_drawdowns function
     return find_top_drawdowns(equity_curve, n=n)
@@ -454,6 +469,27 @@ def _get_css_styles():
             color: #e74c3c;
             font-weight: 600;
         }
+        .dd-summary {
+            margin-top: 10px;
+            margin-bottom: 20px;
+            font-size: 0.95em;
+            line-height: 1.4;
+            background-color: #f9f9f9;
+            padding: 10px 15px;
+            border-left: 4px solid #3498db;
+            border-radius: 6px;
+        }
+        .dd-summary p {
+            margin: 5px 0;
+        }
+        .dd-summary .worsened {
+            color: #e74c3c;   /* red */
+            font-weight: 600;
+        }
+        .dd-summary .offset {
+            color: #27ae60;   /* green */
+            font-weight: 600;
+        }
         .chart-container {
             margin: 30px 0;
         }
@@ -497,7 +533,7 @@ def _build_summary_section(metrics_df, combined_metrics, folder_name):
         (
             "Max Drawdown",
             f"${combined_metrics['Max Drawdown $']:,.0f}",
-            f"{combined_metrics['Max Drawdown %']:.1f}%",
+            f"{combined_metrics['Drawdown % Peak']:.1f}% of peak / {combined_metrics['Drawdown % Initial']:.1f}% of initial",
         ),
         (
             "Win Rate",
@@ -506,6 +542,11 @@ def _build_summary_section(metrics_df, combined_metrics, folder_name):
         ),
         ("Profit Factor", f"{combined_metrics['Profit Factor']:.2f}", ""),
         ("Expectancy/Trade", f"${combined_metrics['Expectancy $']:.2f}", ""),
+        (
+            "Recovery Factor",
+            f"{combined_metrics['Recovery Factor']:.2f}",
+            f"{combined_metrics['Recovery Factor / Year']:.2f} per year",
+        ),
     ]
 
     for label, value, subtitle in key_metrics:
@@ -547,11 +588,13 @@ def _build_strategy_breakdown(metrics_df):
                     <th>Strategy</th>
                     <th>Total Return</th>
                     <th>CAGR %</th>
-                    <th>Max DD %</th>
+                    <th>Max DD</th>
                     <th>Win Rate %</th>
                     <th>Profit Factor</th>
                     <th>Expectancy</th>
                     <th>Trades</th>
+                    <th>Recovery Factor</th>
+                    <th>Recovery Factor / Year</th>
                 </tr>
             </thead>
             <tbody>
@@ -575,13 +618,18 @@ def _build_strategy_row(row):
                     <td><strong>{row['Strategy']}</strong></td>
                     <td class="{return_class}">${row['Total Return $']:,.0f} ({row['Total Return %']:.1f}%)</td>
                     <td>{row['CAGR %']:.1f}%</td>
-                    <td class="negative">{row['Max Drawdown %']:.1f}%</td>
+                    <td class="negative">
+                        ${row['Max Drawdown $']:,.0f} 
+                        ({row['Drawdown % Peak']:.1f}% of peak / {row['Drawdown % Initial']:.1f}% of initial)
+                    </td>
                     <td>{row['Win Rate %']:.1f}%</td>
                     <td>{row['Profit Factor']:.2f}</td>
                     <td>${row['Expectancy $']:.2f}</td>
                     <td>{row['Total Trades']:.0f}</td>
+                    <td>{row['Recovery Factor']:.2f}</td>
+                    <td>{row['Recovery Factor / Year']:.2f}</td>
                 </tr>
-"""
+    """
 
 
 def _build_top_drawdowns_table(top_drawdowns):
@@ -615,7 +663,7 @@ def _build_top_drawdowns_table(top_drawdowns):
 
 
 def _build_drawdown_row(rank, dd):
-    """Build single drawdown table row"""
+    """Build single drawdown table row with both % conventions"""
     peak_date_str = pd.Timestamp(dd["Peak Date"]).strftime("%Y-%m-%d")
     trough_date_str = pd.Timestamp(dd["Trough Date"]).strftime("%Y-%m-%d")
     recovery_date = (
@@ -634,12 +682,15 @@ def _build_drawdown_row(rank, dd):
                     <td>{peak_date_str}</td>
                     <td>{trough_date_str}</td>
                     <td>{recovery_date}</td>
-                    <td class="negative">${dd['Drawdown $']:,.0f} ({dd['Drawdown %']:.1f}%)</td>
+                    <td class="negative">
+                        ${dd['Drawdown $']:,.0f} 
+                        ({dd['Drawdown % Peak']:.1f}% of peak / {dd['Drawdown % Initial']:.1f}% of initial)
+                    </td>
                     <td>{dd['Days to Trough']:.0f}</td>
                     <td>{days_to_recovery}</td>
                     <td>{total_days}</td>
                 </tr>
-"""
+    """
 
 
 def _build_drawdown_breakdown(drawdown_contributions):
@@ -649,6 +700,10 @@ def _build_drawdown_breakdown(drawdown_contributions):
         <p style="color: #7f8c8d; font-size: 14px; margin-bottom: 20px;">
             Shows how much each strategy contributed to the top 3 combined drawdown periods.
         </p>
+          Legend: <span class="negative">▲ Negative % = worsened DD</span>, 
+            <span class="positive">▼ Positive % = offset DD</span>
+        </p>
+
 """
 
     for idx, dd_contrib in enumerate(drawdown_contributions, 1):
@@ -658,7 +713,7 @@ def _build_drawdown_breakdown(drawdown_contributions):
 
 
 def _build_single_drawdown_breakdown(idx, dd_contrib):
-    """Build breakdown for a single drawdown period"""
+    """Build breakdown for a single drawdown period with worsened vs offset grouping"""
     dd = dd_contrib["drawdown"]
     strategies = dd_contrib["strategies"]
 
@@ -667,35 +722,58 @@ def _build_single_drawdown_breakdown(idx, dd_contrib):
 
     html = f"""
         <h3 style="color: #e74c3c; margin-top: 30px; margin-bottom: 10px;">
-            Rank #{idx}: {peak_date_str} to {trough_date_str} | Total: ${dd['Drawdown $']:,.0f} ({dd['Drawdown %']:.1f}%)
+           Rank #{idx}: {peak_date_str} to {trough_date_str} | Total: ${dd['Drawdown $']:,.0f} ({dd['Drawdown % Peak']:.1f}% of peak / {dd['Drawdown % Initial']:.1f}% of initial)
         </h3>
-        <table style="margin-bottom: 30px;">
+        <table style="margin-bottom: 10px;">
             <thead>
                 <tr>
                     <th>Strategy</th>
-                    <th>Loss $</th>
-                    <th>Loss %</th>
-                    <th>Contribution to DD</th>
+                    <th>P&L</th>
+                    <th>P&L % of capital</th>
+                    <th>Contribution % (signed)</th>
                 </tr>
             </thead>
             <tbody>
-"""
+    """
+
+    worsened = []
+    offset = []
 
     for strat in strategies:
-        loss_class = "negative" if strat["Loss $"] < 0 else "positive"
+        pnl_class = "negative" if strat["Loss $"] < 0 else "positive"
+        contrib_class = "negative" if strat["Contribution %"] < 0 else "positive"
+
         html += f"""
                 <tr>
                     <td><strong>{strat['Strategy']}</strong></td>
-                    <td class="{loss_class}">${strat['Loss $']:,.0f}</td>
-                    <td class="{loss_class}">{strat['Loss %']:.1f}%</td>
-                    <td>{abs(strat['Contribution %']):.1f}%</td>
+                    <td class="{pnl_class}">${strat['Loss $']:,.0f}</td>
+                    <td class="{pnl_class}">{strat['Loss %']:.1f}%</td>
+                    <td class="{contrib_class}">{strat['Contribution %']:.1f}%</td>
                 </tr>
-"""
+        """
+
+        if strat["Contribution %"] < 0:
+            worsened.append(f"▲ {strat['Strategy']} ({strat['Contribution %']:.1f}%)")
+        elif strat["Contribution %"] > 0:
+            offset.append(f"▼ {strat['Strategy']} ({strat['Contribution %']:.1f}%)")
 
     html += """
             </tbody>
         </table>
+    """
+
+    # Add grouping summary
+    html += f"""
+        <div class="dd-summary">
+            <p><strong>Worsened DD:</strong> 
+                <span class="worsened">{", ".join(worsened) if worsened else "None"}</span>
+            </p>
+            <p><strong>Offset DD:</strong> 
+                <span class="offset">{", ".join(offset) if offset else "None"}</span>
+            </p>
+        </div>
 """
+
     return html
 
 
@@ -705,6 +783,10 @@ def _build_individual_strategy_drawdowns(strategy_drawdowns):
         <h2>Individual Strategy Drawdowns</h2>
         <p style="color: #7f8c8d; font-size: 14px; margin-bottom: 20px;">
             Top 3 drawdown periods for each strategy independently.
+        </p>
+        <p style="color: #7f8c8d; font-size: 13px; margin-bottom: 20px;">
+        Legend: <span class="negative">▲ Negative % = worsened DD</span>, 
+            <span class="positive">▼ Positive % = offset DD</span>
         </p>
 """
 
@@ -717,12 +799,13 @@ def _build_individual_strategy_drawdowns(strategy_drawdowns):
 
 
 def _build_strategy_drawdown_table(strategy, drawdowns):
-    """Build drawdown table for a single strategy"""
+    """Build drawdown table for a single strategy with both % conventions"""
     worst_dd = drawdowns[0]
 
     html = f"""
         <h3 style="color: #3498db; margin-top: 30px; margin-bottom: 10px;">
-            {strategy} — Worst DD: ${worst_dd['Drawdown $']:,.0f} ({worst_dd['Drawdown %']:.1f}%)
+            {strategy} — Worst DD: ${worst_dd['Drawdown $']:,.0f} 
+            ({worst_dd['Drawdown % Peak']:.1f}% of peak / {worst_dd['Drawdown % Initial']:.1f}% of initial)
         </h3>
         <table style="margin-bottom: 30px;">
             <thead>
@@ -738,7 +821,7 @@ def _build_strategy_drawdown_table(strategy, drawdowns):
                 </tr>
             </thead>
             <tbody>
-"""
+    """
 
     for rank, dd in enumerate(drawdowns, 1):
         html += _build_drawdown_row(rank, dd)
@@ -966,7 +1049,7 @@ def _build_plotly_script(combined_equity, combined_metrics):
                     y: {trough_value},
                     xref: 'x',
                     yref: 'y',
-                    text: 'Max DD: ${combined_metrics['Max Drawdown $']:,.0f}<br>({combined_metrics['Max Drawdown %']:.1f}%)',
+                    text: 'Max DD: ${combined_metrics['Max Drawdown $']:,.0f}<br>({combined_metrics['Drawdown % Peak']:.1f}% of peak / {combined_metrics['Drawdown % Initial']:.1f}% of initial)',
                     showarrow: true,
                     arrowhead: 2,
                     arrowsize: 1,

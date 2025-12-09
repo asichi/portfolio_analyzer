@@ -318,9 +318,6 @@ def calculate_daily_capital_usage(
     else:
         cap = pd.Series(per_trade_capital, index=df.index, dtype=float)
 
-    print("Available columns:", df.columns.tolist())
-    print("Sizing col requested:", sizing_col)
-
     # Build event series: +cap at entry, -cap at exit+1 (if inclusive)
     events = {}
     for entry, exit_, c in zip(df[entry_col], df[exit_col], cap):

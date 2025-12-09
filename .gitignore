@@ -1,3 +1,5 @@
 reports/*
 datasets/*
 git_changes.txt
+debug*
+__pycache__

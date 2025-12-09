@@ -1,322 +1,31 @@
 """
-Portfolio Analyzer - Trading Strategy Combination Tool
-Author: Anthony's Trading System
-Date: 2025-11-14
+report_html_generator.py
+-------------------------
+Generates the HTML portfolio analysis report.
 
-Combines multiple trading strategy CSV files and generates comprehensive performance analysis.
+Responsibilities:
+- Assemble summary cards, tables, and charts into a styled HTML document
+- Integrate external CSS (styles.css) for consistent UI
+- Support interactive features such as tabbed navigation
+- Present capital usage, drawdown breakdowns, and strategy performance
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+import json
+
 from datetime import datetime
 from pathlib import Path
-import sys
-import argparse
 
-# Configuration
-INITIAL_CAPITAL = 100000
-DATASET_FOLDER = "datasets"
-REPORTS_FOLDER = "reports"
-
-# Required columns in CSV files
-REQUIRED_COLUMNS = ["Symbol", "Date", "Ex. date", "Profit"]
-
-
-def validate_csv_file(filepath):
-    """Validate that CSV has required columns"""
-    try:
-        df = pd.read_csv(filepath, nrows=1)
-        missing_cols = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-        if missing_cols:
-            raise ValueError(
-                f"{filepath.name} missing required columns: {missing_cols}"
-            )
-        return True
-    except Exception as e:
-        raise ValueError(f"Failed to read {filepath.name}: {str(e)}")
-
-
-def load_strategy_data(filepath):
-    """Load and clean strategy data from CSV"""
-    try:
-        # Read only needed columns
-        df = pd.read_csv(filepath, usecols=REQUIRED_COLUMNS)
-
-        # Convert dates
-        df["Date"] = pd.to_datetime(df["Date"])
-        df["Ex. date"] = pd.to_datetime(df["Ex. date"])
-
-        # Extract strategy name from filename (e.g., AMS_7.csv -> AMS_7)
-        strategy_name = filepath.stem
-        df["Strategy"] = strategy_name
-
-        # Keep only relevant columns
-        df = df[["Strategy", "Symbol", "Date", "Ex. date", "Profit"]]
-
-        return df
-
-    except Exception as e:
-        raise ValueError(f"Error loading {filepath.name}: {str(e)}")
-
-
-def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
-    """Calculate performance metrics for a strategy or combined portfolio"""
-
-    if strategy_name:
-        trades = trades_df[trades_df["Strategy"] == strategy_name].copy()
-    else:
-        trades = trades_df.copy()
-
-    if len(trades) == 0:
-        return None
-
-    # Basic stats
-    total_profit = trades["Profit"].sum()
-    n_trades = len(trades)
-
-    # Win/Loss analysis
-    wins = trades[trades["Profit"] > 0]
-    losses = trades[trades["Profit"] <= 0]
-
-    n_wins = len(wins)
-    n_losses = len(losses)
-    win_rate = n_wins / n_trades if n_trades > 0 else 0
-
-    avg_win = wins["Profit"].mean() if n_wins > 0 else 0
-    avg_loss = abs(losses["Profit"].mean()) if n_losses > 0 else 0
-
-    # Expected Value per Trade: (Win% × Avg Win) - (Loss% × Avg Loss)
-    expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
-
-    # Profit Factor
-    gross_profit = wins["Profit"].sum() if n_wins > 0 else 0
-    gross_loss = abs(losses["Profit"].sum()) if n_losses > 0 else 1
-    profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
-
-    # Build equity curve
-    if equity_curve is None:
-        equity_df = build_equity_curve(trades_df, strategy_name)
-        equity = equity_df["Equity"].values
-    else:
-        equity = equity_curve
-    # Max Drawdown calculation
-    peak = np.maximum.accumulate(equity)
-    drawdown = equity - peak
-    max_dd = drawdown.min()
-    max_dd_idx = np.argmin(drawdown)
-
-    # Calculate drawdown as % of deployed capital ($100k), not peak equity
-    max_dd_pct = (max_dd / INITIAL_CAPITAL) * 100
-
-    # Recovery Time (calendar days from max drawdown to recovery)
-    recovery_days = np.nan
-    if max_dd_idx < len(equity) - 1:
-        recovery_idx = np.where(equity[max_dd_idx:] >= peak[max_dd_idx])[0]
-        if len(recovery_idx) > 0:
-            trough_date = trades["Ex. date"].iloc[max_dd_idx]
-            recovery_date = trades["Ex. date"].iloc[max_dd_idx + recovery_idx[0]]
-            recovery_days = (recovery_date - trough_date).days
-
-    # CAGR calculation
-    start_date = trades["Ex. date"].min()
-    end_date = trades["Ex. date"].max()
-    days = (end_date - start_date).days
-    years = days / 365.25
-    final_value = INITIAL_CAPITAL + total_profit
-    cagr = (
-        (((final_value / INITIAL_CAPITAL) ** (1 / years)) - 1) * 100 if years > 0 else 0
-    )
-
-    # Recovery Factor (total profit / max drawdown)
-    recovery_factor = (total_profit / abs(max_dd)) if max_dd != 0 else np.nan
-
-    # Annualized Recovery Factor (normalize by years)
-    recovery_factor_per_year = (recovery_factor / years) if years > 0 else np.nan
-
-    return {
-        "Strategy": strategy_name if strategy_name else "COMBINED",
-        "Total Return $": total_profit,
-        "Total Return %": (total_profit / INITIAL_CAPITAL) * 100,
-        "CAGR %": cagr,
-        "Max Drawdown $": max_dd,
-        "Drawdown % Peak": (abs(max_dd) / peak[max_dd_idx]) * 100,
-        "Drawdown % Initial": (abs(max_dd) / INITIAL_CAPITAL) * 100,
-        "Recovery Days": recovery_days,
-        "Win Rate %": win_rate * 100,
-        "Avg Win $": avg_win,
-        "Avg Loss $": avg_loss,
-        "Profit Factor": profit_factor,
-        "Expectancy $": expectancy,
-        "Total Trades": n_trades,
-        "Winning Trades": n_wins,
-        "Losing Trades": n_losses,
-        "Start Date": start_date.strftime("%Y-%m-%d"),
-        "End Date": end_date.strftime("%Y-%m-%d"),
-        "Days": days,
-        "Recovery Factor": recovery_factor,
-        "Recovery Factor / Year": recovery_factor_per_year,
-    }
-
-
-def build_equity_curve(trades_df, strategy_name=None, initial_capital=INITIAL_CAPITAL):
-    """Return equity curve DataFrame for a strategy or combined portfolio."""
-    if strategy_name:
-        trades = trades_df[trades_df["Strategy"] == strategy_name].copy()
-    else:
-        trades = trades_df.copy()
-
-    trades = trades.sort_values("Ex. date").reset_index(drop=True)
-    trades["Cum_Profit"] = trades["Profit"].cumsum()
-    equity_curve = pd.DataFrame(
-        {
-            "Exit_Date": trades["Ex. date"],
-            "Equity": initial_capital + trades["Cum_Profit"],
-        }
-    )
-    return equity_curve
-
-
-def find_top_drawdowns(equity_curve_df, n=3):
-    """Find the top N drawdowns and their recovery information"""
-
-    equity = equity_curve_df["Equity"].values
-    dates = equity_curve_df["Exit_Date"].values
-
-    # Calculate running peak and drawdown
-    peak = np.maximum.accumulate(equity)
-    drawdown = equity - peak
-
-    drawdowns = []
-    in_drawdown = False
-    dd_start_idx = 0
-    dd_peak_value = 0
-
-    for i in range(len(equity)):
-        # Start of drawdown (at peak)
-        if not in_drawdown and (i == 0 or equity[i] == peak[i]):
-            if i < len(equity) - 1 and equity[i + 1] < equity[i]:
-                in_drawdown = True
-                dd_start_idx = i
-                dd_peak_value = equity[i]
-
-        # During drawdown
-        elif in_drawdown:
-            if equity[i] >= dd_peak_value:
-                # Drawdown ended
-                dd_segment = equity[dd_start_idx:i]
-                dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
-                dd_trough_value = equity[dd_trough_idx]
-
-                dd_amount = dd_peak_value - dd_trough_value
-                dd_pct_peak = (dd_amount / dd_peak_value) * 100  # standard convention
-                dd_pct_initial = (
-                    dd_amount / INITIAL_CAPITAL
-                ) * 100  # your current style
-
-                days_to_trough = dd_trough_idx - dd_start_idx
-                days_to_recovery = i - dd_trough_idx
-                total_days = i - dd_start_idx
-
-                drawdowns.append(
-                    {
-                        "Peak Date": dates[dd_start_idx],
-                        "Trough Date": dates[dd_trough_idx],
-                        "Recovery Date": dates[i],
-                        "Peak Value": dd_peak_value,
-                        "Trough Value": dd_trough_value,
-                        "Drawdown $": dd_amount,
-                        "Drawdown % Peak": dd_pct_peak,
-                        "Drawdown % Initial": dd_pct_initial,
-                        "Days to Trough": days_to_trough,
-                        "Days to Recovery": days_to_recovery,
-                        "Total Days": total_days,
-                    }
-                )
-
-                in_drawdown = False
-
-    # Handle ongoing drawdown at the end
-    if in_drawdown:
-        dd_segment = equity[dd_start_idx:]
-        dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
-        dd_trough_value = equity[dd_trough_idx]
-
-        dd_amount = dd_peak_value - dd_trough_value
-        dd_pct_peak = (dd_amount / dd_peak_value) * 100
-        dd_pct_initial = (dd_amount / INITIAL_CAPITAL) * 100
-
-        days_to_trough = dd_trough_idx - dd_start_idx
-
-        drawdowns.append(
-            {
-                "Peak Date": dates[dd_start_idx],
-                "Trough Date": dates[dd_trough_idx],
-                "Recovery Date": None,
-                "Peak Value": dd_peak_value,
-                "Trough Value": dd_trough_value,
-                "Drawdown $": dd_amount,
-                "Drawdown % Peak": dd_pct_peak,
-                "Drawdown % Initial": dd_pct_initial,
-                "Days to Trough": days_to_trough,
-                "Days to Recovery": None,
-                "Total Days": None,
-            }
-        )
-
-    # Sort by magnitude and take top N
-    drawdowns_sorted = sorted(drawdowns, key=lambda x: x["Drawdown $"], reverse=True)
-    return drawdowns_sorted[:n]
-
-
-def find_strategy_drawdowns(all_trades, strategy_name, n=3):
-    """Find top N drawdowns for a specific strategy"""
-
-    # Build equity curve using the shared helper
-    equity_curve = build_equity_curve(all_trades, strategy_name)
-
-    # Use existing find_top_drawdowns function
-    return find_top_drawdowns(equity_curve, n=n)
-
-
-def calculate_strategy_contributions(all_trades, drawdown_periods):
-    """Calculate how much each strategy contributed to each drawdown period"""
-
-    contributions = []
-
-    for dd in drawdown_periods:
-        peak_date = pd.Timestamp(dd["Peak Date"])
-        trough_date = pd.Timestamp(dd["Trough Date"])
-
-        # Get all trades that exited during this drawdown period
-        period_trades = all_trades[
-            (all_trades["Ex. date"] >= peak_date)
-            & (all_trades["Ex. date"] <= trough_date)
-        ]
-
-        # Calculate loss per strategy during this period
-        strategy_breakdown = []
-        total_loss = dd["Drawdown $"]  # Negative value
-
-        for strategy in sorted(all_trades["Strategy"].unique()):
-            strategy_trades = period_trades[period_trades["Strategy"] == strategy]
-            strategy_loss = strategy_trades["Profit"].sum()
-            strategy_loss_pct = (strategy_loss / INITIAL_CAPITAL) * 100
-            contribution_pct = (
-                (strategy_loss / total_loss * 100) if total_loss != 0 else 0
-            )
-
-            strategy_breakdown.append(
-                {
-                    "Strategy": strategy,
-                    "Loss $": strategy_loss,
-                    "Loss %": strategy_loss_pct,
-                    "Contribution %": contribution_pct,
-                }
-            )
-
-        contributions.append({"drawdown": dd, "strategies": strategy_breakdown})
-
-    return contributions
+from config import INITIAL_CAPITAL, REPORTS_FOLDER
+from data_loader import load_strategy_data, validate_csv_file
+from metrics import (
+    calculate_metrics,
+    calculate_daily_capital_usage,
+    calculate_strategy_contributions,
+    find_strategy_drawdowns,
+    find_top_drawdowns,
+)
 
 
 def generate_html_report(
@@ -329,6 +38,8 @@ def generate_html_report(
     folder_name,
     drawdown_contributions,
     strategy_drawdowns,
+    usage_stats,
+    usage,
 ):
     """Generate beautiful HTML report"""
 
@@ -338,19 +49,23 @@ def generate_html_report(
     header = _build_html_header(timestamp)
     summary = _build_summary_section(metrics_df, combined_metrics, folder_name)
     equity_chart = _build_equity_chart_section()
+    capital_usage_chart = _build_capital_usage_chart(usage)
+    capital_usage_table = _build_capital_usage_table(usage, all_trades)
     strategy_table = _build_strategy_breakdown(metrics_df)
     top_dd_table = _build_top_drawdowns_table(top_drawdowns)
     dd_breakdown = _build_drawdown_breakdown(drawdown_contributions)
     individual_dd = _build_individual_strategy_drawdowns(strategy_drawdowns)
     monthly_table = _build_monthly_returns_table(monthly_returns_table)
     footer = _build_html_footer(timestamp)
-    chart_script = _build_plotly_script(combined_equity, combined_metrics)
+    chart_script = _build_plotly_script(combined_equity, usage, combined_metrics)
 
     # Combine all sections
     return (
         header
         + summary
         + equity_chart
+        + capital_usage_chart
+        + capital_usage_table
         + strategy_table
         + top_dd_table
         + dd_breakdown
@@ -369,136 +84,10 @@ def _build_html_header(timestamp):
 <head>
     <title>Portfolio Analysis Report - {timestamp}</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        {_get_css_styles()}
-    </style>
+    <link rel="stylesheet" type="text/css" href="../styles.css">
 </head>
 <body>
     <div class="container">
-"""
-
-
-def _get_css_styles():
-    """Return CSS stylesheet as string"""
-    return """
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background-color: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #2c3e50;
-            border-bottom: 3px solid #3498db;
-            padding-bottom: 10px;
-            margin-bottom: 10px;
-        }
-        h2 {
-            color: #34495e;
-            margin-top: 40px;
-            margin-bottom: 20px;
-        }
-        .summary-box {
-            background-color: #ecf0f1;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            font-size: 14px;
-            color: #2c3e50;
-        }
-        .summary-box strong {
-            color: #2980b9;
-        }
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-        }
-        .metric-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .metric-label {
-            font-size: 14px;
-            opacity: 0.9;
-            margin-bottom: 5px;
-        }
-        .metric-value {
-            font-size: 28px;
-            font-weight: bold;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            background-color: white;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            font-size: 14px;
-        }
-        th {
-            background-color: #3498db;
-            color: white;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-        }
-        td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #ecf0f1;
-        }
-        tr:hover {
-            background-color: #f8f9fa;
-        }
-        .positive {
-            color: #27ae60;
-            font-weight: 600;
-        }
-        .negative {
-            color: #e74c3c;
-            font-weight: 600;
-        }
-        .dd-summary {
-            margin-top: 10px;
-            margin-bottom: 20px;
-            font-size: 0.95em;
-            line-height: 1.4;
-            background-color: #f9f9f9;
-            padding: 10px 15px;
-            border-left: 4px solid #3498db;
-            border-radius: 6px;
-        }
-        .dd-summary p {
-            margin: 5px 0;
-        }
-        .dd-summary .worsened {
-            color: #e74c3c;   /* red */
-            font-weight: 600;
-        }
-        .dd-summary .offset {
-            color: #27ae60;   /* green */
-            font-weight: 600;
-        }
-        .chart-container {
-            margin: 30px 0;
-        }
-        .timestamp {
-            text-align: right;
-            color: #7f8c8d;
-            font-size: 12px;
-            margin-top: 20px;
-        }
 """
 
 
@@ -576,6 +165,45 @@ def _build_equity_chart_section():
         <h2>Combined Equity Curve</h2>
         <div id="equity_curve" class="chart-container"></div>
 """
+
+
+def _build_capital_usage_chart(usage: pd.Series) -> str:
+    """
+    Build a standalone Plotly chart for daily capital usage.
+    Expects `usage` to be a Pandas Series with a DatetimeIndex.
+    """
+    x_values = usage.index.strftime("%Y-%m-%d").tolist()
+    y_values = usage.values.tolist()
+
+    trace = {
+        "x": x_values,
+        "y": y_values,
+        "type": "scatter",
+        "mode": "lines",
+        "name": "Capital Usage",
+        "line": {"color": "#e67e22", "width": 2},  # Match your orange from original
+        "fill": "tozeroy",
+        "fillcolor": "rgba(230, 126, 34, 0.1)",
+    }
+
+    trace_json = json.dumps(trace)
+
+    return f"""
+    <h2>Daily Capital Usage</h2>
+    <div id="capital-usage-chart" class="chart-container"></div>
+    <script>
+        var capitalUsageData = [{trace_json}];
+        var capitalLayout = {{
+            xaxis: {{title: 'Date', showgrid: true, gridcolor: '#ecf0f1'}},
+            yaxis: {{title: 'Capital Usage ($)', showgrid: true, gridcolor: '#ecf0f1', tickformat: '$,.0f'}},
+            hovermode: 'x unified',
+            plot_bgcolor: 'white',
+            paper_bgcolor: 'white',
+            height: 500
+        }};
+        Plotly.newPlot('capital-usage-chart', capitalUsageData, capitalLayout, {{responsive: true}});
+    </script>
+    """
 
 
 def _build_strategy_breakdown(metrics_df):
@@ -934,8 +562,8 @@ def _build_html_footer(timestamp):
 """
 
 
-def _build_plotly_script(combined_equity, combined_metrics):
-    """Build Plotly chart JavaScript"""
+def _build_plotly_script(combined_equity, usage, combined_metrics):
+    """Build Plotly chart JavaScript with equity curve and drawdown markers (no usage overlay)."""
 
     # Calculate max drawdown points for visualization
     equity_values = combined_equity["Equity"].values
@@ -964,10 +592,7 @@ def _build_plotly_script(combined_equity, combined_metrics):
             type: 'scatter',
             mode: 'lines',
             name: 'Portfolio Equity',
-            line: {{
-                color: '#3498db',
-                width: 2
-            }},
+            line: {{color: '#3498db', width: 2}},
             fill: 'tonexty',
             fillcolor: 'rgba(52, 152, 219, 0.1)'
         }};
@@ -978,11 +603,7 @@ def _build_plotly_script(combined_equity, combined_metrics):
             type: 'scatter',
             mode: 'lines',
             name: 'Starting Capital',
-            line: {{
-                color: '#95a5a6',
-                width: 1,
-                dash: 'dash'
-            }}
+            line: {{color: '#95a5a6', width: 1, dash: 'dash'}}
         }};
 
         // Max Drawdown Markers
@@ -995,34 +616,18 @@ def _build_plotly_script(combined_equity, combined_metrics):
                 color: ['#e74c3c', '#e74c3c'],
                 size: 12,
                 symbol: ['triangle-down', 'triangle-up'],
-                line: {{
-                    color: 'white',
-                    width: 2
-                }}
+                line: {{color: 'white', width: 2}}
             }},
             text: ['Peak', 'Trough'],
             textposition: 'top center',
-            textfont: {{
-                color: '#e74c3c',
-                size: 10,
-                family: 'Arial, sans-serif'
-            }},
+            textfont: {{color: '#e74c3c', size: 10, family: 'Arial, sans-serif'}},
             hovertemplate: '<b>%{{text}}</b><br>Date: %{{x}}<br>Equity: $%{{y:,.0f}}<extra></extra>'
         }};
         
         var equity_layout = {{
-            title: 'Portfolio Equity Curve ($100,000 Starting Capital)',
-            xaxis: {{
-                title: 'Date',
-                showgrid: true,
-                gridcolor: '#ecf0f1'
-            }},
-            yaxis: {{
-                title: 'Equity ($)',
-                showgrid: true,
-                gridcolor: '#ecf0f1',
-                tickformat: '$,.0f'
-            }},
+            title: 'Portfolio Equity Curve',
+            xaxis: {{title: 'Date', showgrid: true, gridcolor: '#ecf0f1'}},
+            yaxis: {{title: 'Equity ($)', showgrid: true, gridcolor: '#ecf0f1', tickformat: '$,.0f'}},
             hovermode: 'x unified',
             plot_bgcolor: 'white',
             paper_bgcolor: 'white',
@@ -1037,9 +642,7 @@ def _build_plotly_script(combined_equity, combined_metrics):
                     y0: 0,
                     y1: 1,
                     fillcolor: 'rgba(231, 76, 60, 0.1)',
-                    line: {{
-                        width: 0
-                    }},
+                    line: {{width: 0}},
                     layer: 'below'
                 }}
             ],
@@ -1049,7 +652,9 @@ def _build_plotly_script(combined_equity, combined_metrics):
                     y: {trough_value},
                     xref: 'x',
                     yref: 'y',
-                    text: 'Max DD: ${combined_metrics['Max Drawdown $']:,.0f}<br>({combined_metrics['Drawdown % Peak']:.1f}% of peak / {combined_metrics['Drawdown % Initial']:.1f}% of initial)',
+                    text: 'Max DD: ${combined_metrics["Max Drawdown $"]:,.0f}<br>'
+                          + '({combined_metrics["Drawdown % Peak"]:.1f}% of peak / '
+                          + '{combined_metrics["Drawdown % Initial"]:.1f}% of initial)',
                     showarrow: true,
                     arrowhead: 2,
                     arrowsize: 1,
@@ -1061,19 +666,83 @@ def _build_plotly_script(combined_equity, combined_metrics):
                     bordercolor: '#e74c3c',
                     borderwidth: 2,
                     borderpad: 4,
-                    font: {{
-                        size: 11,
-                        color: '#2c3e50'
-                    }}
+                    font: {{size: 11, color: '#2c3e50'}}
                 }}
             ]
         }};
         
         Plotly.newPlot('equity_curve', [baseline, equity_data, dd_markers], equity_layout, {{responsive: true}});
     </script>
-</body>
-</html>
-"""
+    """
+
+
+def _build_capital_usage_table(usage, trades_df):
+    """
+    Build HTML table of capital usage percentiles, max, tail analysis, and P&L context.
+
+    Parameters
+    ----------
+    usage : pandas.Series
+        Daily capital usage values in dollars (indexed by Date).
+    trades_df : pandas.DataFrame
+        Trades with 'Ex. date' and 'Profit' columns.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # Percentiles
+    median = np.percentile(usage, 50)
+    p75 = np.percentile(usage, 75)
+    p95 = np.percentile(usage, 95)
+    p99 = np.percentile(usage, 99)
+    max_val = usage.max()
+
+    # Tail metrics
+    tail_ratio = max_val / p95 if p95 > 0 else float("nan")
+    days_total = len(usage)
+    days_above_95 = (usage > p95).sum()
+    days_above_99 = (usage > p99).sum()
+    freq_95 = (days_above_95 / days_total) * 100 if days_total > 0 else 0
+    freq_99 = (days_above_99 / days_total) * 100 if days_total > 0 else 0
+
+    # Daily P&L series
+    daily_pnl = trades_df.groupby("Ex. date")["Profit"].sum()
+    daily_pnl = daily_pnl.reindex(usage.index, fill_value=0.0)
+
+    # Tail P&L stats
+    pnl_95 = daily_pnl[usage > p95]
+    pnl_99 = daily_pnl[usage > p99]
+
+    avg_pnl_95 = pnl_95.mean() if len(pnl_95) else 0.0
+    avg_pnl_99 = pnl_99.mean() if len(pnl_99) else 0.0
+    worst_pnl_95 = pnl_95.min() if len(pnl_95) else 0.0
+    best_pnl_95 = pnl_95.max() if len(pnl_95) else 0.0
+
+    return f"""
+        <h2>Capital Usage Percentiles, Tail Analysis & P&L Context</h2>
+        <table>
+            <thead>
+                <tr><th>Metric</th><th>Value</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Median (50th)</td><td class="neutral">${median:,.0f}</td></tr>
+                <tr><td>75th percentile</td><td class="neutral">${p75:,.0f}</td></tr>
+                <tr><td>95th percentile</td><td class="negative">${p95:,.0f}</td></tr>
+                <tr><td>99th percentile</td><td class="negative">${p99:,.0f}</td></tr>
+                <tr class="tail-row"><td>Max</td><td class="negative">${max_val:,.0f}</td></tr>
+                <tr class="tail-row"><td>Tail Ratio (Max ÷ 95th)</td><td>{tail_ratio:.2f}×</td></tr>
+                <tr class="tail-row"><td>Days >95th</td><td>{freq_95:.1f}% ({days_above_95} days)</td></tr>
+                <tr class="tail-row"><td>Days >99th</td><td>{freq_99:.1f}% ({days_above_99} days)</td></tr>
+                <tr class="tail-row"><td>Avg P&L >95th</td><td>${avg_pnl_95:,.0f}</td></tr>
+                <tr class="tail-row"><td>Avg P&L >99th</td><td>${avg_pnl_99:,.0f}</td></tr>
+                <tr class="tail-row"><td>Worst P&L >95th</td><td class="negative">${worst_pnl_95:,.0f}</td></tr>
+                <tr class="tail-row"><td>Best P&L >95th</td><td class="positive">${best_pnl_95:,.0f}</td></tr>
+            </tbody>
+        </table>
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+            Tail metrics highlight rare but extreme usage days and their associated profit/loss outcomes.
+        </p>
+    """
 
 
 def format_folder_name(folder_name):
@@ -1149,6 +818,23 @@ def process_folder(folder_path, folder_name):
 
     metrics_df = pd.DataFrame(strategy_metrics)
 
+    # Compute daily capital usage
+    # Combine list of DataFrames into one
+    if isinstance(all_trades, list):
+        all_trades = pd.concat(all_trades, ignore_index=True)
+
+    # Normalize column names to avoid case/space mismatches
+    all_trades.columns = all_trades.columns.str.strip().str.lower()
+
+    # Now safe to call with lowercase
+    usage, usage_stats, extra = calculate_daily_capital_usage(
+        all_trades,
+        sizing_col="position value",  # lowercase after normalization
+        entry_col="date",  # lowercase after normalization
+        exit_col="ex. date",  # lowercase after normalization
+        inclusive_exit=True,
+    )
+
     # Calculate monthly returns
     combined_equity["Year"] = combined_equity["Exit_Date"].dt.year
     combined_equity["Month"] = combined_equity["Exit_Date"].dt.month
@@ -1197,6 +883,8 @@ def process_folder(folder_path, folder_name):
         formatted_name,
         drawdown_contributions,
         strategy_drawdowns,
+        usage_stats,
+        usage,
     )
 
     # Create reports folder if needed
@@ -1224,95 +912,3 @@ def process_folder(folder_path, folder_name):
         "return": combined_metrics["Total Return $"],
         "report": report_filename,
     }
-
-
-def main():
-    """Main execution function"""
-
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Analyze trading strategy performance")
-    parser.add_argument(
-        "folder",
-        nargs="?",
-        default=None,
-        help="Specific subfolder to analyze (default: all subfolders)",
-    )
-    args = parser.parse_args()
-
-    print("\n" + "=" * 60)
-    print("Portfolio Analyzer - Trading Strategy Combination Tool")
-    print("=" * 60 + "\n")
-
-    # Check if dataset folder exists
-    dataset_path = Path(DATASET_FOLDER)
-    if not dataset_path.exists():
-        print(f"❌ ERROR: Dataset folder '{DATASET_FOLDER}' not found!")
-        print(f"   Please create the folder and add your CSV files.")
-        sys.exit(1)
-
-    # Find all subfolders (ignore files directly in dataset/)
-    subfolders = [d for d in dataset_path.iterdir() if d.is_dir()]
-
-    if len(subfolders) == 0:
-        print(f"❌ ERROR: No subfolders found in '{DATASET_FOLDER}' folder!")
-        print(f"   Please create subfolders like: swing_systems/, day_trades/, etc.")
-        sys.exit(1)
-
-    # If specific folder requested, validate it
-    if args.folder:
-        requested_folder = dataset_path / args.folder
-        if not requested_folder.exists() or not requested_folder.is_dir():
-            print(f"❌ ERROR: Folder '{args.folder}' not found in '{DATASET_FOLDER}'!")
-            print(f"\n   Available folders:")
-            for folder in subfolders:
-                print(f"     • {folder.name}")
-            sys.exit(1)
-        folders_to_process = [requested_folder]
-    else:
-        folders_to_process = subfolders
-
-    print(f"📁 Found {len(subfolders)} strategy group(s) in {DATASET_FOLDER}/\n")
-    if args.folder:
-        print(f"🎯 Processing only: {args.folder}\n")
-
-    # Single timestamp for all reports
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-
-    # Process each folder
-    results = []
-    for folder_path in folders_to_process:
-        try:
-            result = process_folder(folder_path, folder_path.name)
-            if result:
-                results.append(result)
-        except KeyboardInterrupt:
-            print("\n\n⚠️  Analysis interrupted by user.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"  ❌ ERROR processing {folder_path.name}: {str(e)}")
-            import traceback
-
-            traceback.print_exc()
-            continue
-
-    # Final summary
-    print("=" * 60)
-    if len(results) == 0:
-        print("⚠️  No reports generated - all folders were empty or had errors")
-    else:
-        print(f"✅ ANALYSIS COMPLETE - {len(results)} report(s) generated")
-    print("=" * 60 + "\n")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Analysis interrupted by user.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ UNEXPECTED ERROR: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)

@@ -19,7 +19,7 @@ import argparse
 
 
 from config import DATASET_FOLDER
-from report_html_generator import process_all_strategies, process_folder
+from report_generator import process_all_strategies, process_folder
 
 
 def main():

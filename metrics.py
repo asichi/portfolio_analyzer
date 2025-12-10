@@ -149,95 +149,74 @@ def build_equity_curve(trades_df, strategy_name=None, initial_capital=INITIAL_CA
 
 
 def find_top_drawdowns(equity_curve_df, n=3):
-    """Find the top N drawdowns and their recovery information"""
-
+    """Find the top N drawdowns - max pain perspective
+    
+    A drawdown only ends when equity reaches a NEW all-time high.
+    Partial recoveries don't end the drawdown - tracks worst continuous pain.
+    """
     equity = equity_curve_df["Equity"].values
     dates = equity_curve_df["Exit_Date"].values
-
-    # Calculate running peak and drawdown
     peak = np.maximum.accumulate(equity)
-    drawdown = equity - peak
-
+    
     drawdowns = []
-    in_drawdown = False
-    dd_start_idx = 0
-    dd_peak_value = 0
-
+    in_dd = False
+    dd_start = dd_peak = dd_trough_idx = dd_trough_val = None
+    
     for i in range(len(equity)):
-        # Start of drawdown (at peak)
-        if not in_drawdown and (i == 0 or equity[i] == peak[i]):
-            if i < len(equity) - 1 and equity[i + 1] < equity[i]:
-                in_drawdown = True
-                dd_start_idx = i
-                dd_peak_value = equity[i]
-
-        # During drawdown
-        elif in_drawdown:
-            if equity[i] >= dd_peak_value:
-                # Drawdown ended
-                dd_segment = equity[dd_start_idx:i]
-                dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
-                dd_trough_value = equity[dd_trough_idx]
-
-                dd_amount = dd_peak_value - dd_trough_value
-                dd_pct_peak = (dd_amount / dd_peak_value) * 100  # standard convention
-                dd_pct_initial = (
-                    dd_amount / INITIAL_CAPITAL
-                ) * 100  # your current style
-
-                days_to_trough = dd_trough_idx - dd_start_idx
-                days_to_recovery = i - dd_trough_idx
-                total_days = i - dd_start_idx
-
-                drawdowns.append(
-                    {
-                        "Peak Date": dates[dd_start_idx],
-                        "Trough Date": dates[dd_trough_idx],
-                        "Recovery Date": dates[i],
-                        "Peak Value": dd_peak_value,
-                        "Trough Value": dd_trough_value,
-                        "Drawdown $": dd_amount,
-                        "Drawdown % Peak": dd_pct_peak,
-                        "Drawdown % Initial": dd_pct_initial,
-                        "Days to Trough": days_to_trough,
-                        "Days to Recovery": days_to_recovery,
-                        "Total Days": total_days,
-                    }
-                )
-
-                in_drawdown = False
-
-    # Handle ongoing drawdown at the end
-    if in_drawdown:
-        dd_segment = equity[dd_start_idx:]
-        dd_trough_idx = dd_start_idx + np.argmin(dd_segment)
-        dd_trough_value = equity[dd_trough_idx]
-
-        dd_amount = dd_peak_value - dd_trough_value
-        dd_pct_peak = (dd_amount / dd_peak_value) * 100
-        dd_pct_initial = (dd_amount / INITIAL_CAPITAL) * 100
-
-        days_to_trough = dd_trough_idx - dd_start_idx
-
-        drawdowns.append(
-            {
-                "Peak Date": dates[dd_start_idx],
-                "Trough Date": dates[dd_trough_idx],
-                "Recovery Date": None,
-                "Peak Value": dd_peak_value,
-                "Trough Value": dd_trough_value,
-                "Drawdown $": dd_amount,
-                "Drawdown % Peak": dd_pct_peak,
-                "Drawdown % Initial": dd_pct_initial,
-                "Days to Trough": days_to_trough,
-                "Days to Recovery": None,
-                "Total Days": None,
-            }
-        )
-
-    # Sort by magnitude and take top N
-    drawdowns_sorted = sorted(drawdowns, key=lambda x: x["Drawdown $"], reverse=True)
-    return drawdowns_sorted[:n]
+        at_peak = (equity[i] == peak[i])
+        
+        if at_peak:
+            if in_dd:
+                # Drawdown recovered - close it
+                dd_amt = dd_peak - dd_trough_val
+                drawdowns.append({
+                    "Peak Date": dates[dd_start],
+                    "Trough Date": dates[dd_trough_idx],
+                    "Recovery Date": dates[i],
+                    "Peak Value": dd_peak,
+                    "Trough Value": dd_trough_val,
+                    "Drawdown $": dd_amt,
+                    "Drawdown % Peak": (dd_amt / dd_peak) * 100,
+                    "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
+                    "Days to Trough": dd_trough_idx - dd_start,
+                    "Days to Recovery": i - dd_trough_idx,
+                    "Total Days": i - dd_start,
+                })
+                in_dd = False
+        else:
+            # Below peak
+            if not in_dd:
+                # Start new drawdown
+                peak_idx = np.where(equity[:i+1] == peak[i])[0][-1]
+                dd_start = peak_idx
+                dd_peak = peak[i]
+                dd_trough_idx = i
+                dd_trough_val = equity[i]
+                in_dd = True
+            elif equity[i] < dd_trough_val:
+                # Update trough
+                dd_trough_idx = i
+                dd_trough_val = equity[i]
+    
+    # Ongoing drawdown
+    if in_dd:
+        dd_amt = dd_peak - dd_trough_val
+        drawdowns.append({
+            "Peak Date": dates[dd_start],
+            "Trough Date": dates[dd_trough_idx],
+            "Recovery Date": None,
+            "Peak Value": dd_peak,
+            "Trough Value": dd_trough_val,
+            "Drawdown $": dd_amt,
+            "Drawdown % Peak": (dd_amt / dd_peak) * 100,
+            "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
+            "Days to Trough": dd_trough_idx - dd_start,
+            "Days to Recovery": None,
+            "Total Days": None,
+        })
+    
+    drawdowns.sort(key=lambda x: x["Drawdown $"], reverse=True)
+    return drawdowns[:n]
 
 
 def find_strategy_drawdowns(all_trades, strategy_name, n=3):

@@ -5,12 +5,12 @@ Analyze and combine multiple trading strategy backtests with professional HTML r
 ## Features
 
 - **Multi-Strategy Analysis** - Combine strategies and analyze performance together
-- **All Strategies Report** - Master report combining all strategies across all folders  <!-- NEW -->
+- **All Strategies Report** - Master report combining all strategies across all folders
 - **Interactive HTML Reports** - Plotly charts with equity curves and capital usage
 - **Comprehensive Metrics** - Annual Profit, drawdowns, win rate, profit factor, recovery factors
 - **Capital Usage Analysis** - Track deployment with percentile and tail risk metrics
 - **Drawdown Attribution** - Identify which strategies contribute to portfolio drawdowns
-- **Individual Strategy Drawdowns** - Top 3 drawdowns for each strategy  <!-- NEW -->
+- **Individual Strategy Drawdowns** - Top 3 drawdowns for each strategy
 - **CLI Support** - Analyze all strategies or target specific groups
 
 ## Installation
@@ -27,7 +27,13 @@ your_project/
 ├── config.py
 ├── data_loader.py
 ├── metrics.py
-├── report_html_generator.py
+├── report_generator/
+│   ├── __init__.py
+│   ├── chart_builder.py
+│   ├── table_builder.py
+│   ├── html_builder.py
+│   ├── formatters.py
+│   └── processor.py
 ├── styles.css
 ├── datasets/
 │   ├── swing_systems/
@@ -38,14 +44,16 @@ your_project/
 │   ├── day_trades/
 │   │   ├── ams_1.csv
 │   │   └── ams_2.csv
-│   ├── weekly_systems/
+│   ├── gappers/
+│   │   └── ...
+│   └── weekly_systems/
 │       └── ...
 └── reports/          # Auto-generated
     ├── swing_systems.html
     ├── day_trades.html
     ├── gappers.html
     ├── weekly_systems.html
-    └── all_strategies.html  # NEW: Combined report
+    └── all_strategies.html
 ```
 
 ### 2. CSV Format
@@ -83,14 +91,14 @@ REQUIRED_COLUMNS = ["Symbol", "Date", "Ex. date", "Profit", "Position value"]
 Each report includes:
 
 - **Portfolio Summary** - Returns, Annual Profits, drawdowns, win rate, profit factor, recovery factors
-- **Equity Curve** - Interactive chart with drawdown visualization
+- **Equity Curve** - Interactive dual-panel chart (equity + drawdown visualization)
 - **Capital Usage** - Daily deployment chart with percentile analysis and tail risk metrics
 - **Strategy Breakdown** - Individual metrics for each strategy
-- **Top Drawdowns** - Peak/trough dates, recovery times, strategy contributions sorted by impact  <!-- UPDATED -->
-- **Individual Strategy Drawdowns** - Top 3 drawdowns for each strategy  <!-- NEW -->
+- **Top Drawdowns** - Peak/trough dates, recovery times, strategy contributions sorted by impact
+- **Individual Strategy Drawdowns** - Top 3 drawdowns for each strategy
 - **Monthly Returns** - Calendar heatmap with yearly totals
 
-### All Strategies Report  <!-- NEW SECTION -->
+### All Strategies Report
 
 When running without arguments, an additional `all_strategies.html` report is generated that:
 - Combines all unique CSV files across all folders
@@ -98,12 +106,26 @@ When running without arguments, an additional `all_strategies.html` report is ge
 - Shows how different strategy groups interact during stress periods
 - Useful for overall capital allocation and risk management decisions
 
+## Drawdown Calculation
+
+Drawdowns use the **"max pain" perspective**:
+- A drawdown only ends when equity reaches a **new all-time high**
+- Partial recoveries don't split the drawdown into separate episodes
+- Tracks the worst continuous pain from peak to ultimate trough
+- Ensures Portfolio Summary and Top Drawdowns table show consistent maximum drawdown values
+- Drawdown % calculated relative to initial capital (not peak) for practical risk assessment
+
 ## Architecture
 
 **`config.py`** - Configuration constants  
 **`data_loader.py`** - CSV validation and ingestion  
-**`metrics.py`** - Performance calculations, equity curves, capital usage, drawdown attribution  <!-- UPDATED -->
-**`report_html_generator.py`** - HTML report generation with Plotly charts, folder and combined processing  <!-- UPDATED -->
+**`metrics.py`** - Performance calculations, equity curves, capital usage, drawdown attribution  
+**`report_generator/`** - Modular HTML report generation package
+  - `chart_builder.py` - Plotly chart generation (equity curve, capital usage)
+  - `table_builder.py` - HTML tables (drawdowns, monthly returns, capital usage)
+  - `html_builder.py` - HTML structure, headers, and summary sections
+  - `formatters.py` - Formatting utilities for numbers and dates
+  - `processor.py` - Main processing logic for folders and combined reports  
 **`main.py`** - CLI entry point and orchestration  
 **`styles.css`** - Report styling  
 

@@ -12,7 +12,6 @@ Coordinates the workflow by:
 Outputs a complete portfolio analysis report to the reports/ directory.
 """
 
-
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -20,7 +19,7 @@ import argparse
 
 
 from config import DATASET_FOLDER
-from report_html_generator import process_folder
+from report_html_generator import process_all_strategies, process_folder
 
 
 def main():
@@ -91,6 +90,18 @@ def main():
 
             traceback.print_exc()
             continue
+
+    # NEW: Generate combined "all strategies" report (only if not processing a specific folder)
+    if not args.folder:
+        try:
+            all_result = process_all_strategies(dataset_path)
+            if all_result:
+                results.append(all_result)
+        except Exception as e:
+            print(f"  ❌ ERROR generating combined report: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
 
     # Final summary
     print("=" * 60)

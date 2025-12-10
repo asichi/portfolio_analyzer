@@ -269,7 +269,7 @@ def calculate_strategy_contributions(all_trades, drawdown_periods):
         strategy_breakdown = []
         total_loss = dd["Drawdown $"]  # Negative value
 
-        for strategy in sorted(all_trades["Strategy"].unique()):
+        for strategy in all_trades["Strategy"].unique():
             strategy_trades = period_trades[period_trades["Strategy"] == strategy]
             strategy_loss = strategy_trades["Profit"].sum()
             strategy_loss_pct = (strategy_loss / INITIAL_CAPITAL) * 100

@@ -51,7 +51,6 @@ def generate_html_report(
     equity_chart = _build_equity_chart_section()
     capital_usage_chart = _build_capital_usage_chart(usage)
     capital_usage_table = _build_capital_usage_table(usage, all_trades)
-    strategy_table = _build_strategy_breakdown(metrics_df)
     top_dd_table = _build_top_drawdowns_table(top_drawdowns)
     dd_breakdown = _build_drawdown_breakdown(drawdown_contributions)
     individual_dd = _build_individual_strategy_drawdowns(strategy_drawdowns)
@@ -66,7 +65,6 @@ def generate_html_report(
         + equity_chart
         + capital_usage_chart
         + capital_usage_table
-        + strategy_table
         + top_dd_table
         + dd_breakdown
         + individual_dd
@@ -118,7 +116,16 @@ def _build_summary_section(metrics_df, combined_metrics, folder_name):
             f"${combined_metrics['Total Return $']:,.0f}",
             f"{combined_metrics['Total Return %']:.1f}%",
         ),
-        ("CAGR", f"{combined_metrics['CAGR %']:.1f}%", ""),
+        (
+            "Average Annual Profit",
+            f"${combined_metrics['Avg Annual Profit $']:,.0f}",
+            f"{combined_metrics['Avg Annual Profit %']:.1f}% of initial",
+        ),
+        (
+            "Median Annual Profit",
+            f"${combined_metrics['Median Annual Profit $']:,.0f}",
+            f"{combined_metrics['Median Annual Profit %']:.1f}% of initial",
+        ),
         (
             "Max Drawdown",
             f"${combined_metrics['Max Drawdown $']:,.0f}",
@@ -206,64 +213,10 @@ def _build_capital_usage_chart(usage: pd.Series) -> str:
     """
 
 
-def _build_strategy_breakdown(metrics_df):
-    """Build strategy breakdown table"""
-    html = """
-        <h2>Strategy Breakdown</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Strategy</th>
-                    <th>Total Return</th>
-                    <th>CAGR %</th>
-                    <th>Max DD</th>
-                    <th>Win Rate %</th>
-                    <th>Profit Factor</th>
-                    <th>Expectancy</th>
-                    <th>Trades</th>
-                    <th>Recovery Factor</th>
-                    <th>Recovery Factor / Year</th>
-                </tr>
-            </thead>
-            <tbody>
-"""
-
-    for _, row in metrics_df.iterrows():
-        html += _build_strategy_row(row)
-
-    html += """
-            </tbody>
-        </table>
-"""
-    return html
-
-
-def _build_strategy_row(row):
-    """Build single strategy table row"""
-    return_class = "positive" if row["Total Return $"] > 0 else "negative"
-    return f"""
-                <tr>
-                    <td><strong>{row['Strategy']}</strong></td>
-                    <td class="{return_class}">${row['Total Return $']:,.0f} ({row['Total Return %']:.1f}%)</td>
-                    <td>{row['CAGR %']:.1f}%</td>
-                    <td class="negative">
-                        ${row['Max Drawdown $']:,.0f} 
-                        ({row['Drawdown % Peak']:.1f}% of peak / {row['Drawdown % Initial']:.1f}% of initial)
-                    </td>
-                    <td>{row['Win Rate %']:.1f}%</td>
-                    <td>{row['Profit Factor']:.2f}</td>
-                    <td>${row['Expectancy $']:.2f}</td>
-                    <td>{row['Total Trades']:.0f}</td>
-                    <td>{row['Recovery Factor']:.2f}</td>
-                    <td>{row['Recovery Factor / Year']:.2f}</td>
-                </tr>
-    """
-
-
 def _build_top_drawdowns_table(top_drawdowns):
-    """Build top 3 drawdowns table"""
+    """Build HTML table for top drawdowns with debug clarity."""
     html = """
-        <h2>Top 3 Drawdown Periods</h2>
+        <h2>Top Drawdowns</h2>
         <table>
             <thead>
                 <tr>
@@ -272,21 +225,40 @@ def _build_top_drawdowns_table(top_drawdowns):
                     <th>Trough Date</th>
                     <th>Recovery Date</th>
                     <th>Drawdown</th>
+                    <th>% of Initial</th>
+                    <th>% of Peak</th>
                     <th>Days to Trough</th>
                     <th>Days to Recover</th>
-                    <th>Total Duration</th>
                 </tr>
             </thead>
             <tbody>
-"""
+    """
 
     for rank, dd in enumerate(top_drawdowns, 1):
-        html += _build_drawdown_row(rank, dd)
+        peak_val = dd["Peak Value"]
+        trough_val = dd["Trough Value"]
+        abs_dd = peak_val - trough_val
+        pct_initial = (abs_dd / INITIAL_CAPITAL) * 100
+        pct_peak = (abs_dd / peak_val) * 100
+
+        html += (
+            f"<tr>"
+            f"<td><strong>#{rank}</strong></td>"
+            f"<td>{pd.Timestamp(dd['Peak Date']).strftime('%Y-%m-%d')}</td>"
+            f"<td>{pd.Timestamp(dd['Trough Date']).strftime('%Y-%m-%d')}</td>"
+            f"<td>{pd.Timestamp(dd['Recovery Date']).strftime('%Y-%m-%d') if dd['Recovery Date'] else 'ONGOING'}</td>"
+            f"<td>${abs_dd:,.2f}</td>"
+            f"<td>{pct_initial:.2f}%</td>"
+            f"<td>{pct_peak:.2f}%</td>"
+            f"<td>{dd['Days to Trough']}</td>"
+            f"<td>{dd['Days to Recovery'] if dd['Days to Recovery'] is not None else 'ONGOING'}</td>"
+            f"</tr>"
+        )
 
     html += """
             </tbody>
         </table>
-"""
+    """
     return html
 
 

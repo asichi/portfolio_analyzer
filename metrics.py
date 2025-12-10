@@ -10,7 +10,6 @@ Responsibilities:
 - Attribute contributions by strategy for benchmarking and tail analysis
 """
 
-
 import pandas as pd
 import numpy as np
 
@@ -43,7 +42,7 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
     avg_win = wins["Profit"].mean() if n_wins > 0 else 0
     avg_loss = abs(losses["Profit"].mean()) if n_losses > 0 else 0
 
-    # Expected Value per Trade: (Win% × Avg Win) - (Loss% × Avg Loss)
+    # Expected Value per Trade
     expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
 
     # Profit Factor
@@ -57,16 +56,16 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
         equity = equity_df["Equity"].values
     else:
         equity = equity_curve
-    # Max Drawdown calculation
+
+    # Max Drawdown
     peak = np.maximum.accumulate(equity)
     drawdown = equity - peak
     max_dd = drawdown.min()
     max_dd_idx = np.argmin(drawdown)
 
-    # Calculate drawdown as % of deployed capital ($100k), not peak equity
     max_dd_pct = (max_dd / INITIAL_CAPITAL) * 100
 
-    # Recovery Time (calendar days from max drawdown to recovery)
+    # Recovery Time
     recovery_days = np.nan
     if max_dd_idx < len(equity) - 1:
         recovery_idx = np.where(equity[max_dd_idx:] >= peak[max_dd_idx])[0]
@@ -75,27 +74,42 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
             recovery_date = trades["Ex. date"].iloc[max_dd_idx + recovery_idx[0]]
             recovery_days = (recovery_date - trough_date).days
 
-    # CAGR calculation
+    # Period length
     start_date = trades["Ex. date"].min()
     end_date = trades["Ex. date"].max()
     days = (end_date - start_date).days
     years = days / 365.25
+
     final_value = INITIAL_CAPITAL + total_profit
+
+    # CAGR (keep for optional use)
     cagr = (
         (((final_value / INITIAL_CAPITAL) ** (1 / years)) - 1) * 100 if years > 0 else 0
     )
 
-    # Recovery Factor (total profit / max drawdown)
+    # Recovery Factor
     recovery_factor = (total_profit / abs(max_dd)) if max_dd != 0 else np.nan
-
-    # Annualized Recovery Factor (normalize by years)
     recovery_factor_per_year = (recovery_factor / years) if years > 0 else np.nan
+
+    # --- NEW: Cash-flow metrics ---
+    trades["Year"] = trades["Ex. date"].dt.year
+    yearly_profits = trades.groupby("Year")["Profit"].sum()
+
+    avg_annual_profit = yearly_profits.mean() if len(yearly_profits) > 0 else 0
+    median_annual_profit = yearly_profits.median() if len(yearly_profits) > 0 else 0
+
+    avg_annual_profit_pct = (avg_annual_profit / INITIAL_CAPITAL) * 100
+    median_annual_profit_pct = (median_annual_profit / INITIAL_CAPITAL) * 100
 
     return {
         "Strategy": strategy_name if strategy_name else "COMBINED",
         "Total Return $": total_profit,
         "Total Return %": (total_profit / INITIAL_CAPITAL) * 100,
-        "CAGR %": cagr,
+        "CAGR %": cagr,  # keep for optional use
+        "Avg Annual Profit $": avg_annual_profit,
+        "Avg Annual Profit %": avg_annual_profit_pct,
+        "Median Annual Profit $": median_annual_profit,
+        "Median Annual Profit %": median_annual_profit_pct,
         "Max Drawdown $": max_dd,
         "Drawdown % Peak": (abs(max_dd) / peak[max_dd_idx]) * 100,
         "Drawdown % Initial": (abs(max_dd) / INITIAL_CAPITAL) * 100,

@@ -6,7 +6,7 @@ Analyze and combine multiple trading strategy backtests with professional HTML r
 
 - **Multi-Strategy Analysis** - Combine strategies and analyze performance together
 - **Interactive HTML Reports** - Plotly charts with equity curves and capital usage
-- **Comprehensive Metrics** - CAGR, drawdowns, win rate, profit factor, recovery factors
+- **Comprehensive Metrics** - Annual Profit, drawdowns, win rate, profit factor, recovery factors
 - **Capital Usage Analysis** - Track deployment with percentile and tail risk metrics
 - **Drawdown Attribution** - Identify which strategies contribute to portfolio drawdowns
 - **CLI Support** - Analyze all strategies or target specific groups
@@ -73,7 +73,7 @@ REQUIRED_COLUMNS = ["Symbol", "Date", "Ex. date", "Profit", "Position value"]
 
 ## Report Contents
 
-- **Portfolio Summary** - Returns, CAGR, drawdowns, win rate, profit factor, recovery factors
+- **Portfolio Summary** - Returns, Annual Profits, drawdowns, win rate, profit factor, recovery factors
 - **Equity Curve** - Interactive chart with drawdown visualization
 - **Capital Usage** - Daily deployment chart with percentile analysis and tail risk metrics
 - **Strategy Breakdown** - Individual metrics for each strategy

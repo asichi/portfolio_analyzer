@@ -47,7 +47,7 @@ def build_metric_card(label, value, subtitle=""):
 """
 
 
-def build_summary_section(metrics_df, combined_metrics, folder_name):
+def build_summary_section(metrics_df, combined_metrics, folder_name, monthly_gpr=None):
     """Build portfolio summary section with key metrics"""
     total_strategies = len(metrics_df) - 1
     total_trades = int(combined_metrics["Total Trades"])
@@ -95,6 +95,11 @@ def build_summary_section(metrics_df, combined_metrics, folder_name):
             f"{combined_metrics['Winning Trades']:.0f}W / {combined_metrics['Losing Trades']:.0f}L",
         ),
         ("Profit Factor", f"{combined_metrics['Profit Factor']:.2f}", ""),
+        (
+            "Monthly GPR",
+            "∞" if monthly_gpr == float("inf") else f"{monthly_gpr:.2f}",
+            "Gain-to-Pain Ratio",
+        ),
         ("Expectancy/Trade", f"${combined_metrics['Expectancy $']:.2f}", ""),
         (
             "Recovery Factor",
@@ -124,9 +129,11 @@ def generate_html_report(
     strategy_drawdowns,
     usage_stats,
     usage,
+    swing_cap_summary=None,
+    monthly_gpr=None,
 ):
     """Generate complete HTML report by assembling all sections"""
-    
+
     from .chart_builder import (
         build_equity_chart_section,
         build_capital_usage_chart,
@@ -138,16 +145,23 @@ def generate_html_report(
         build_individual_strategy_drawdowns,
         build_monthly_returns_table,
         build_capital_usage_table,
+        build_swing_cap_sweep_table,
     )
-    
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Build sections
     header = build_html_header(timestamp)
-    summary = build_summary_section(metrics_df, combined_metrics, folder_name)
+    summary = build_summary_section(
+        metrics_df,
+        combined_metrics,
+        folder_name,
+        monthly_gpr=monthly_gpr,
+    )
     equity_chart = build_equity_chart_section()
     capital_usage_chart = build_capital_usage_chart(usage)
     capital_usage_table = build_capital_usage_table(usage, all_trades)
+    swing_cap_table = build_swing_cap_sweep_table(swing_cap_summary)
     top_dd_table = build_top_drawdowns_table(top_drawdowns)
     dd_breakdown = build_drawdown_breakdown(drawdown_contributions)
     individual_dd = build_individual_strategy_drawdowns(strategy_drawdowns)
@@ -162,6 +176,7 @@ def generate_html_report(
         + equity_chart
         + capital_usage_chart
         + capital_usage_table
+        + swing_cap_table
         + top_dd_table
         + dd_breakdown
         + individual_dd

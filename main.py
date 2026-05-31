@@ -12,7 +12,6 @@ Coordinates the workflow by:
 Outputs a complete portfolio analysis report to the reports/ directory.
 """
 
-from datetime import datetime
 from pathlib import Path
 import sys
 import argparse
@@ -70,9 +69,6 @@ def main():
     print(f"📁 Found {len(subfolders)} strategy group(s) in {DATASET_FOLDER}/\n")
     if args.folder:
         print(f"🎯 Processing only: {args.folder}\n")
-
-    # Single timestamp for all reports
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
     # Process each folder
     results = []

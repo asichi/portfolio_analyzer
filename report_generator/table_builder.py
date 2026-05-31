@@ -97,7 +97,8 @@ def build_drawdown_breakdown(drawdown_contributions):
         <p style="color: #7f8c8d; font-size: 14px; margin-bottom: 20px;">
             Shows how much each strategy contributed to the top 3 combined drawdown periods.
         </p>
-          Legend: <span class="negative">▲ Negative % = worsened DD</span>, 
+        <p style="color: #7f8c8d; font-size: 13px; margin-bottom: 20px;">
+            Legend: <span class="negative">▲ Negative % = worsened DD</span>, 
             <span class="positive">▼ Positive % = offset DD</span>
         </p>
 
@@ -321,11 +322,22 @@ def build_capital_usage_table(usage, trades_df):
     Parameters
     ----------
     usage : pandas.Series
-        Daily capital usage values in dollars (indexed by Date).
+        Daily capital usage values in dollars, indexed by date.
+
     trades_df : pandas.DataFrame
-        Trades with 'Ex. date' and 'Profit' columns.
+        Trades with normalized lowercase columns:
+        - ex. date
+        - profit
     """
-    
+
+    if usage is None or len(usage) == 0:
+        return """
+        <h2>Capital Usage Percentiles, Tail Analysis &amp; P&amp;L Context</h2>
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+            No capital usage data available.
+        </p>
+        """
+
     # Percentiles
     median = np.percentile(usage, 50)
     p75 = np.percentile(usage, 75)
@@ -341,10 +353,22 @@ def build_capital_usage_table(usage, trades_df):
     freq_95 = (days_above_95 / days_total) * 100 if days_total > 0 else 0
     freq_99 = (days_above_99 / days_total) * 100 if days_total > 0 else 0
 
-    # Daily P&L series
-    # Note: columns are already normalized to lowercase in processor.py
-    daily_pnl = trades_df.groupby("ex. date")["profit"].sum()
-    daily_pnl = daily_pnl.reindex(usage.index, fill_value=0.0)
+    # Daily P&L series.
+    # Columns are normalized to lowercase in processor.py before this function is called.
+    if trades_df is not None and len(trades_df) > 0:
+        required_cols = {"ex. date", "profit"}
+        missing_cols = required_cols - set(trades_df.columns)
+
+        if missing_cols:
+            raise ValueError(
+                "Cannot build capital usage table. "
+                f"Missing required columns: {sorted(missing_cols)}"
+            )
+
+        daily_pnl = trades_df.groupby("ex. date")["profit"].sum()
+        daily_pnl = daily_pnl.reindex(usage.index, fill_value=0.0)
+    else:
+        daily_pnl = pd.Series(0.0, index=usage.index)
 
     # Tail P&L stats
     pnl_95 = daily_pnl[usage > p95]
@@ -356,7 +380,7 @@ def build_capital_usage_table(usage, trades_df):
     best_pnl_95 = pnl_95.max() if len(pnl_95) else 0.0
 
     return f"""
-        <h2>Capital Usage Percentiles, Tail Analysis & P&L Context</h2>
+        <h2>Capital Usage Percentiles, Tail Analysis &amp; P&amp;L Context</h2>
         <table>
             <thead>
                 <tr><th>Metric</th><th>Value</th></tr>
@@ -368,15 +392,82 @@ def build_capital_usage_table(usage, trades_df):
                 <tr><td>99th percentile</td><td class="negative">${p99:,.0f}</td></tr>
                 <tr class="tail-row"><td>Max</td><td class="negative">${max_val:,.0f}</td></tr>
                 <tr class="tail-row"><td>Tail Ratio (Max ÷ 95th)</td><td>{tail_ratio:.2f}×</td></tr>
-                <tr class="tail-row"><td>Days >95th</td><td>{freq_95:.1f}% ({days_above_95} days)</td></tr>
-                <tr class="tail-row"><td>Days >99th</td><td>{freq_99:.1f}% ({days_above_99} days)</td></tr>
-                <tr class="tail-row"><td>Avg P&L >95th</td><td>${avg_pnl_95:,.0f}</td></tr>
-                <tr class="tail-row"><td>Avg P&L >99th</td><td>${avg_pnl_99:,.0f}</td></tr>
-                <tr class="tail-row"><td>Worst P&L >95th</td><td class="negative">${worst_pnl_95:,.0f}</td></tr>
-                <tr class="tail-row"><td>Best P&L >95th</td><td class="positive">${best_pnl_95:,.0f}</td></tr>
+                <tr class="tail-row"><td>Days &gt;95th</td><td>{freq_95:.1f}% ({days_above_95} days)</td></tr>
+                <tr class="tail-row"><td>Days &gt;99th</td><td>{freq_99:.1f}% ({days_above_99} days)</td></tr>
+                <tr class="tail-row"><td>Avg P&amp;L &gt;95th</td><td>${avg_pnl_95:,.0f}</td></tr>
+                <tr class="tail-row"><td>Avg P&amp;L &gt;99th</td><td>${avg_pnl_99:,.0f}</td></tr>
+                <tr class="tail-row"><td>Worst P&amp;L &gt;95th</td><td class="negative">${worst_pnl_95:,.0f}</td></tr>
+                <tr class="tail-row"><td>Best P&amp;L &gt;95th</td><td class="positive">${best_pnl_95:,.0f}</td></tr>
             </tbody>
         </table>
         <p style="font-size: 0.9em; color: #7f8c8d;">
             Tail metrics highlight rare but extreme usage days and their associated profit/loss outcomes.
         </p>
     """
+
+
+def build_swing_cap_sweep_table(swing_cap_summary):
+    """Build HTML table for swing capital cap what-if results."""
+
+    if swing_cap_summary is None or len(swing_cap_summary) == 0:
+        return ""
+
+    html = """
+        <h2>Swing Allocation Compliance Test</h2>
+        <p style="color: #7f8c8d; font-size: 14px; margin-bottom: 20px;">
+           The $100,000 row represents the intended total allocation for swing and weekly systems.
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cap</th>
+                    <th>Trades Kept</th>
+                    <th>Trades Skipped</th>
+                    <th>Skipped P&amp;L</th>
+                    <th>Total P&amp;L</th>
+                    <th>Max DD</th>
+                    <th>Recovery Factor</th>
+                    <th>Profit Factor</th>
+                    <th>Win Rate</th>
+                    <th>95th Usage</th>
+                    <th>99th Usage</th>
+                    <th>Max Usage</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+
+    for _, row in swing_cap_summary.iterrows():
+        skipped_pnl_class = "positive" if row["Skipped P&L"] > 0 else "negative"
+        total_pnl_class = "positive" if row["Total P&L"] > 0 else "negative"
+
+        # The simulator now reports Max DD as a positive magnitude.
+        # Keep the risk styling negative regardless of sign and display absolute value
+        # so old cached summaries with negative drawdown still render correctly.
+        max_dd_value = abs(row["Max DD"])
+        max_dd_class = "negative"
+
+        html += f"""
+                <tr>
+                    <td><strong>{row['Cap']}</strong></td>
+                    <td>{int(row['Trades Kept']):,}</td>
+                    <td>{int(row['Trades Skipped']):,}</td>
+                    <td class="{skipped_pnl_class}">${row['Skipped P&L']:,.0f}</td>
+                    <td class="{total_pnl_class}">${row['Total P&L']:,.0f}</td>
+                    <td class="{max_dd_class}">${max_dd_value:,.0f}</td>
+                    <td>{row['Recovery Factor']:.2f}</td>
+                    <td>{row['Profit Factor']:.2f}</td>
+                    <td>{row['Win Rate %']:.1f}%</td>
+                    <td>${row['95th Usage']:,.0f}</td>
+                    <td>${row['99th Usage']:,.0f}</td>
+                    <td>${row['Max Usage']:,.0f}</td>
+                </tr>
+        """
+
+    html += """
+            </tbody>
+        </table>
+    """
+
+    return html
+

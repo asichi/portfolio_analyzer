@@ -13,7 +13,7 @@ Responsibilities:
 import pandas as pd
 import numpy as np
 
-from config import INITIAL_CAPITAL
+from config import INITIAL_CAPITAL, SWING_CAP_GROUPS, SWING_CAP_LEVELS
 
 
 def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
@@ -365,6 +365,173 @@ def calculate_daily_capital_usage(
     return usage, stats, extra
 
 
+def simulate_swing_cap_sweep(
+    trades_df: pd.DataFrame,
+    cap_levels=None,
+    swing_groups=None,
+    capital_col: str = "Position value",
+    entry_col: str = "Date",
+    exit_col: str = "Ex. date",
+    strategy_group_col: str = "StrategyGroup",
+):
+    """
+    Simulate first-come-first-served swing capital caps from raw trades.
+
+    Non-swing trades are always accepted.
+
+    Swing trades are capped only when their StrategyGroup is in swing_groups.
+    Existing accepted swing trades consume active swing capital until their
+    exit date has passed.
+
+    Returns:
+        summary_df:
+            One row per cap level with portfolio metrics after the cap.
+
+        simulation_results:
+            Dict keyed by cap label. Each value contains:
+                accepted_trades
+                skipped_trades
+    """
+
+    if cap_levels is None:
+        cap_levels = SWING_CAP_LEVELS
+
+    if swing_groups is None:
+        swing_groups = SWING_CAP_GROUPS
+
+    if trades_df.empty:
+        return pd.DataFrame(), {}
+
+    required_columns = [
+        entry_col,
+        exit_col,
+        capital_col,
+        strategy_group_col,
+        "Profit",
+    ]
+
+    missing_columns = [col for col in required_columns if col not in trades_df.columns]
+    if missing_columns:
+        raise ValueError(
+            "Cannot run swing capital cap simulation. "
+            f"Missing required columns: {missing_columns}"
+        )
+
+    base_df = trades_df.copy()
+    base_df[entry_col] = pd.to_datetime(base_df[entry_col]).dt.normalize()
+    base_df[exit_col] = pd.to_datetime(base_df[exit_col]).dt.normalize()
+    base_df[capital_col] = pd.to_numeric(base_df[capital_col], errors="coerce").fillna(
+        0.0
+    )
+    base_df["Profit"] = pd.to_numeric(base_df["Profit"], errors="coerce").fillna(0.0)
+
+    if (base_df[exit_col] < base_df[entry_col]).any():
+        raise ValueError("Found trades with exit before entry. Fix input data.")
+
+    # Stable ordering matters for first-come-first-served simulation.
+    base_df["_OriginalOrder"] = range(len(base_df))
+    base_df = base_df.sort_values([entry_col, "_OriginalOrder"]).reset_index(drop=True)
+
+    summary_rows = []
+    simulation_results = {}
+
+    for cap in cap_levels:
+        cap_label = "NoCap" if cap is None else f"${cap:,.0f}"
+
+        if cap is None:
+            accepted = base_df.copy()
+            skipped = base_df.iloc[0:0].copy()
+        else:
+            accepted_indices = []
+            skipped_indices = []
+
+            # Active accepted swing trades only.
+            # Each item is: (exit_date, active_capital)
+            active_swing_trades = []
+
+            for idx, trade in base_df.iterrows():
+                entry_date = trade[entry_col]
+                exit_date = trade[exit_col]
+                trade_capital = float(trade[capital_col])
+                strategy_group = trade[strategy_group_col]
+
+                is_capped_swing_trade = strategy_group in swing_groups
+
+                if not is_capped_swing_trade:
+                    accepted_indices.append(idx)
+                    continue
+
+                # Release swing capital after the exit date has passed.
+                active_swing_trades = [
+                    active for active in active_swing_trades if active[0] >= entry_date
+                ]
+
+                active_swing_capital = sum(active[1] for active in active_swing_trades)
+
+                if active_swing_capital + trade_capital <= cap:
+                    accepted_indices.append(idx)
+                    active_swing_trades.append((exit_date, trade_capital))
+                else:
+                    skipped_indices.append(idx)
+
+            accepted = base_df.loc[accepted_indices].copy()
+            skipped = base_df.loc[skipped_indices].copy()
+
+        accepted = accepted.drop(columns=["_OriginalOrder"], errors="ignore")
+        skipped = skipped.drop(columns=["_OriginalOrder"], errors="ignore")
+
+        # Metrics should be calculated from the accepted portfolio only.
+        # Sort by exit date before building the equity curve so drawdown indexes
+        # line up with the trade order used by calculate_metrics.
+        accepted_for_metrics = accepted.sort_values(exit_col).reset_index(drop=True)
+
+        equity_curve = build_equity_curve(accepted_for_metrics)
+        metrics = calculate_metrics(
+            accepted_for_metrics, equity_curve=equity_curve["Equity"].values
+        )
+
+        usage, usage_stats, _ = calculate_daily_capital_usage(
+            accepted,
+            sizing_col=capital_col,
+            entry_col=entry_col,
+            exit_col=exit_col,
+            inclusive_exit=True,
+        )
+
+        usage_95 = float(usage.quantile(0.95)) if len(usage) else 0.0
+        usage_99 = float(usage.quantile(0.99)) if len(usage) else 0.0
+
+        skipped_pnl = float(skipped["Profit"].sum()) if len(skipped) else 0.0
+        accepted_pnl = float(accepted["Profit"].sum()) if len(accepted) else 0.0
+
+        summary_rows.append(
+            {
+                "Cap": cap_label,
+                "CapValue": cap,
+                "Trades Kept": len(accepted),
+                "Trades Skipped": len(skipped),
+                "Skipped P&L": skipped_pnl,
+                "Total P&L": accepted_pnl,
+                "Max DD": abs(metrics["Max Drawdown $"]) if metrics else 0.0,
+                "Recovery Factor": metrics["Recovery Factor"] if metrics else 0.0,
+                "Profit Factor": metrics["Profit Factor"] if metrics else 0.0,
+                "Win Rate %": metrics["Win Rate %"] if metrics else 0.0,
+                "95th Usage": usage_95,
+                "99th Usage": usage_99,
+                "Max Usage": usage_stats["Max Usage"],
+            }
+        )
+
+        simulation_results[cap_label] = {
+            "accepted_trades": accepted,
+            "skipped_trades": skipped,
+        }
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    return summary_df, simulation_results
+
+
 def debug_annualized_calculation(trades_df, strategy_name=None, verbose=True):
     """
     Debug annualized profit calculation.
@@ -443,3 +610,44 @@ def debug_annualized_calculation(trades_df, strategy_name=None, verbose=True):
         "difference": difference,
         "years": years,
     }
+
+def calculate_monthly_gain_to_pain(monthly_returns_df: pd.DataFrame) -> float:
+    """
+    Calculate Schwager-style monthly Gain-to-Pain Ratio.
+
+    Formula:
+        sum(positive monthly returns) / abs(sum(negative monthly returns))
+
+    Expected input:
+        DataFrame with a "Return %" column, where each row represents one month.
+
+    Notes:
+        - This is monthly return based, not trade based.
+        - Trade-based Gain-to-Pain is effectively Profit Factor.
+        - If there are gains but no losing months, returns np.inf.
+        - If there are no gains and no losses, returns 0.0.
+    """
+    if monthly_returns_df is None or monthly_returns_df.empty:
+        return 0.0
+
+    if "Return %" not in monthly_returns_df.columns:
+        raise ValueError(
+            "Cannot calculate monthly Gain-to-Pain Ratio. "
+            "Missing required column: 'Return %'"
+        )
+
+    monthly_returns = pd.to_numeric(
+        monthly_returns_df["Return %"],
+        errors="coerce",
+    ).dropna()
+
+    if monthly_returns.empty:
+        return 0.0
+
+    total_gains = monthly_returns[monthly_returns > 0].sum()
+    total_losses = monthly_returns[monthly_returns < 0].sum()
+
+    if total_losses == 0:
+        return np.inf if total_gains > 0 else 0.0
+
+    return float(total_gains / abs(total_losses))

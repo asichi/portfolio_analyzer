@@ -8,14 +8,16 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from config import INITIAL_CAPITAL, REPORTS_FOLDER
+from config import INITIAL_CAPITAL, REPORTS_FOLDER, SWING_CAP_ENABLED
 from data_loader import load_strategy_data, validate_csv_file
 from metrics import (
     calculate_metrics,
     calculate_daily_capital_usage,
+    calculate_monthly_gain_to_pain,
     calculate_strategy_contributions,
     find_strategy_drawdowns,
     find_top_drawdowns,
+    simulate_swing_cap_sweep,
 )
 from .html_builder import generate_html_report
 from .formatters import format_folder_name
@@ -41,7 +43,7 @@ def process_folder(folder_path, folder_name):
         try:
             print(f"  ⏳ Loading {csv_file.name}...", end=" ")
             validate_csv_file(csv_file)
-            df = load_strategy_data(csv_file)
+            df = load_strategy_data(csv_file, strategy_group=folder_name)
             all_trades.append(df)
             strategy_names.append(csv_file.stem)
             print(f"✓ ({len(df)} trades)")
@@ -105,6 +107,17 @@ def process_folder(folder_path, folder_name):
         inclusive_exit=True,
     )
 
+    swing_cap_summary = None
+
+    if SWING_CAP_ENABLED:
+        swing_cap_summary, _ = simulate_swing_cap_sweep(
+            combined_df,
+            capital_col="Position value",
+            entry_col="Date",
+            exit_col="Ex. date",
+            strategy_group_col="StrategyGroup",
+        )
+
     # Calculate monthly returns
     combined_equity["Year"] = combined_equity["Exit_Date"].dt.year
     combined_equity["Month"] = combined_equity["Exit_Date"].dt.month
@@ -113,6 +126,8 @@ def process_folder(folder_path, folder_name):
         combined_equity.groupby(["Year", "Month"])["Profit"].sum().reset_index()
     )
     monthly_returns["Return %"] = (monthly_returns["Profit"] / INITIAL_CAPITAL) * 100
+
+    monthly_gpr = calculate_monthly_gain_to_pain(monthly_returns)
 
     # Create pivot table
     monthly_pivot = monthly_returns.pivot(
@@ -155,6 +170,8 @@ def process_folder(folder_path, folder_name):
         strategy_drawdowns,
         usage_stats,
         usage,
+        swing_cap_summary=swing_cap_summary,
+        monthly_gpr=monthly_gpr,
     )
 
     # Create reports folder if needed
@@ -220,7 +237,7 @@ def process_all_strategies(dataset_path):
         try:
             print(f"  ⏳ Loading {csv_file.name}...", end=" ")
             validate_csv_file(csv_file)
-            df = load_strategy_data(csv_file)
+            df = load_strategy_data(csv_file, strategy_group=csv_file.parent.name)
             all_trades.append(df)
             strategy_names.append(strategy_name)
             print(f"✓ ({len(df)} trades)")
@@ -288,6 +305,17 @@ def process_all_strategies(dataset_path):
         inclusive_exit=True,
     )
 
+    swing_cap_summary = None
+
+    if SWING_CAP_ENABLED:
+        swing_cap_summary, _ = simulate_swing_cap_sweep(
+            combined_df,
+            capital_col="Position value",
+            entry_col="Date",
+            exit_col="Ex. date",
+            strategy_group_col="StrategyGroup",
+        )
+
     # Calculate monthly returns
     combined_equity["Year"] = combined_equity["Exit_Date"].dt.year
     combined_equity["Month"] = combined_equity["Exit_Date"].dt.month
@@ -296,6 +324,8 @@ def process_all_strategies(dataset_path):
         combined_equity.groupby(["Year", "Month"])["Profit"].sum().reset_index()
     )
     monthly_returns["Return %"] = (monthly_returns["Profit"] / INITIAL_CAPITAL) * 100
+
+    monthly_gpr = calculate_monthly_gain_to_pain(monthly_returns)
 
     # Create pivot table
     monthly_pivot = monthly_returns.pivot(
@@ -337,6 +367,8 @@ def process_all_strategies(dataset_path):
         strategy_drawdowns,
         usage_stats,
         usage,
+        swing_cap_summary=swing_cap_summary,
+        monthly_gpr=monthly_gpr,
     )
 
     # Save report

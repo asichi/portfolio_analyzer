@@ -3,3 +3,4 @@ datasets/*
 git_changes.txt
 debug*
 __pycache__
+*.zip

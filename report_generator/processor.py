@@ -126,8 +126,18 @@ def process_folder(folder_path, folder_name):
 
     monthly_pivot = monthly_pivot.sort_index(axis=1)
     month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
     ]
     monthly_pivot.columns = month_names
 
@@ -299,8 +309,18 @@ def process_all_strategies(dataset_path):
 
     monthly_pivot = monthly_pivot.sort_index(axis=1)
     month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
     ]
     monthly_pivot.columns = month_names
 

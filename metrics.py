@@ -92,13 +92,14 @@ def calculate_metrics(trades_df, strategy_name=None, equity_curve=None):
     recovery_factor_per_year = (recovery_factor / years) if years > 0 else np.nan
 
     # --- NEW: Cash-flow metrics ---
+    # Use period-based annualization (correct method)
+    avg_annual_profit = total_profit / years if years > 0 else 0
+    avg_annual_profit_pct = (avg_annual_profit / INITIAL_CAPITAL) * 100
+
+    # Keep median for reference (yearly-based)
     trades["Year"] = trades["Ex. date"].dt.year
     yearly_profits = trades.groupby("Year")["Profit"].sum()
-
-    avg_annual_profit = yearly_profits.mean() if len(yearly_profits) > 0 else 0
     median_annual_profit = yearly_profits.median() if len(yearly_profits) > 0 else 0
-
-    avg_annual_profit_pct = (avg_annual_profit / INITIAL_CAPITAL) * 100
     median_annual_profit_pct = (median_annual_profit / INITIAL_CAPITAL) * 100
 
     return {
@@ -150,44 +151,46 @@ def build_equity_curve(trades_df, strategy_name=None, initial_capital=INITIAL_CA
 
 def find_top_drawdowns(equity_curve_df, n=3):
     """Find the top N drawdowns - max pain perspective
-    
+
     A drawdown only ends when equity reaches a NEW all-time high.
     Partial recoveries don't end the drawdown - tracks worst continuous pain.
     """
     equity = equity_curve_df["Equity"].values
     dates = equity_curve_df["Exit_Date"].values
     peak = np.maximum.accumulate(equity)
-    
+
     drawdowns = []
     in_dd = False
     dd_start = dd_peak = dd_trough_idx = dd_trough_val = None
-    
+
     for i in range(len(equity)):
-        at_peak = (equity[i] == peak[i])
-        
+        at_peak = equity[i] == peak[i]
+
         if at_peak:
             if in_dd:
                 # Drawdown recovered - close it
                 dd_amt = dd_peak - dd_trough_val
-                drawdowns.append({
-                    "Peak Date": dates[dd_start],
-                    "Trough Date": dates[dd_trough_idx],
-                    "Recovery Date": dates[i],
-                    "Peak Value": dd_peak,
-                    "Trough Value": dd_trough_val,
-                    "Drawdown $": dd_amt,
-                    "Drawdown % Peak": (dd_amt / dd_peak) * 100,
-                    "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
-                    "Days to Trough": dd_trough_idx - dd_start,
-                    "Days to Recovery": i - dd_trough_idx,
-                    "Total Days": i - dd_start,
-                })
+                drawdowns.append(
+                    {
+                        "Peak Date": dates[dd_start],
+                        "Trough Date": dates[dd_trough_idx],
+                        "Recovery Date": dates[i],
+                        "Peak Value": dd_peak,
+                        "Trough Value": dd_trough_val,
+                        "Drawdown $": dd_amt,
+                        "Drawdown % Peak": (dd_amt / dd_peak) * 100,
+                        "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
+                        "Days to Trough": dd_trough_idx - dd_start,
+                        "Days to Recovery": i - dd_trough_idx,
+                        "Total Days": i - dd_start,
+                    }
+                )
                 in_dd = False
         else:
             # Below peak
             if not in_dd:
                 # Start new drawdown
-                peak_idx = np.where(equity[:i+1] == peak[i])[0][-1]
+                peak_idx = np.where(equity[: i + 1] == peak[i])[0][-1]
                 dd_start = peak_idx
                 dd_peak = peak[i]
                 dd_trough_idx = i
@@ -197,24 +200,26 @@ def find_top_drawdowns(equity_curve_df, n=3):
                 # Update trough
                 dd_trough_idx = i
                 dd_trough_val = equity[i]
-    
+
     # Ongoing drawdown
     if in_dd:
         dd_amt = dd_peak - dd_trough_val
-        drawdowns.append({
-            "Peak Date": dates[dd_start],
-            "Trough Date": dates[dd_trough_idx],
-            "Recovery Date": None,
-            "Peak Value": dd_peak,
-            "Trough Value": dd_trough_val,
-            "Drawdown $": dd_amt,
-            "Drawdown % Peak": (dd_amt / dd_peak) * 100,
-            "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
-            "Days to Trough": dd_trough_idx - dd_start,
-            "Days to Recovery": None,
-            "Total Days": None,
-        })
-    
+        drawdowns.append(
+            {
+                "Peak Date": dates[dd_start],
+                "Trough Date": dates[dd_trough_idx],
+                "Recovery Date": None,
+                "Peak Value": dd_peak,
+                "Trough Value": dd_trough_val,
+                "Drawdown $": dd_amt,
+                "Drawdown % Peak": (dd_amt / dd_peak) * 100,
+                "Drawdown % Initial": (dd_amt / INITIAL_CAPITAL) * 100,
+                "Days to Trough": dd_trough_idx - dd_start,
+                "Days to Recovery": None,
+                "Total Days": None,
+            }
+        )
+
     drawdowns.sort(key=lambda x: x["Drawdown $"], reverse=True)
     return drawdowns[:n]
 
@@ -358,3 +363,83 @@ def calculate_daily_capital_usage(
     extra = {"Baseline Capital": float(baseline_capital), "Usage % Series": usage_pct}
 
     return usage, stats, extra
+
+
+def debug_annualized_calculation(trades_df, strategy_name=None, verbose=True):
+    """
+    Debug annualized profit calculation.
+    Shows difference between two methods:
+    1. Total Profit / Actual Period (CORRECT)
+    2. Mean of Yearly Profits (POTENTIALLY WRONG)
+    """
+
+    if strategy_name:
+        trades = trades_df[trades_df["Strategy"] == strategy_name].copy()
+    else:
+        trades = trades_df.copy()
+
+    if len(trades) == 0:
+        return None
+
+    # === METHOD 1: Period-Based (CORRECT) ===
+    total_profit = trades["Profit"].sum()
+    start_date = trades["Ex. date"].min()
+    end_date = trades["Ex. date"].max()
+    days = (end_date - start_date).days
+    years = days / 365.25
+
+    annualized_period = total_profit / years if years > 0 else 0
+    annualized_period_pct = (annualized_period / INITIAL_CAPITAL) * 100
+
+    # === METHOD 2: Yearly Average (POTENTIALLY WRONG) ===
+    trades["Year"] = trades["Ex. date"].dt.year
+    yearly_profits = trades.groupby("Year")["Profit"].sum()
+
+    avg_annual_profit = yearly_profits.mean()
+    avg_annual_profit_pct = (avg_annual_profit / INITIAL_CAPITAL) * 100
+
+    # === COMPARISON ===
+    difference = avg_annual_profit - annualized_period
+    difference_pct = (
+        ((difference / annualized_period) * 100) if annualized_period != 0 else 0
+    )
+
+    if verbose:
+        print("\n" + "=" * 80)
+        print(f"DEBUG: {strategy_name if strategy_name else 'COMBINED'}")
+        print("=" * 80)
+
+        print(f"\n📊 PERIOD:")
+        print(
+            f"   Start: {start_date.strftime('%Y-%m-%d')} | End: {end_date.strftime('%Y-%m-%d')}"
+        )
+        print(f"   Days: {days} | Years: {years:.4f}")
+        print(f"   Total Profit: ${total_profit:,.2f}")
+
+        print(f"\n💰 METHOD 1: Period-Based")
+        print(
+            f"   ${total_profit:,.2f} / {years:.4f} = ${annualized_period:,.2f}/year ({annualized_period_pct:.2f}%)"
+        )
+
+        print(f"\n📅 METHOD 2: Yearly Average")
+        print(
+            f"   Years: {yearly_profits.index.min()}-{yearly_profits.index.max()} ({len(yearly_profits)} years)"
+        )
+        print(
+            f"   Average: ${avg_annual_profit:,.2f}/year ({avg_annual_profit_pct:.2f}%)"
+        )
+
+        print(f"\n⚠️  DIFFERENCE: ${difference:,.2f} ({difference_pct:.2f}%)")
+        if abs(difference_pct) > 1:
+            print(f"   ❌ MISMATCH!")
+        else:
+            print(f"   ✓ OK")
+
+        print("=" * 80 + "\n")
+
+    return {
+        "method1": annualized_period,
+        "method2": avg_annual_profit,
+        "difference": difference,
+        "years": years,
+    }

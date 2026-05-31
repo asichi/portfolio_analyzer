@@ -1,53 +1,50 @@
 """
 data_loader.py
----------------
-Handles CSV validation and data ingestion for trading strategies.
-
-Responsibilities:
-- Validate that input files contain required columns
-- Load and clean strategy trade data into pandas DataFrames
-- Provide standardized data structures for downstream metrics calculations
+Validate CSV format + normalize columns
 """
 
-
-
-import pandas as pd
-
-from config import REQUIRED_COLUMNS
+from csv_adapter import load_and_normalize_csv, detect_csv_format, CSVFormatError
 
 
 def validate_csv_file(filepath):
-    """Validate that CSV has required columns"""
+    """
+    Validate CSV format (auto-detects StrategyEngine or PortfolioAnalyzer).
+    
+    CHANGED: Now uses csv_adapter for format detection
+    """
     try:
-        df = pd.read_csv(filepath, nrows=1)
-        missing_cols = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-        if missing_cols:
-            raise ValueError(
-                f"{filepath.name} missing required columns: {missing_cols}"
-            )
-        return True
-    except Exception as e:
+        detect_csv_format(filepath)
+        return True  # Valid if format detected
+    except CSVFormatError as e:
         raise ValueError(f"Failed to read {filepath.name}: {str(e)}")
 
 
 def load_strategy_data(filepath):
-    """Load and clean strategy data from CSV"""
+    """
+    Load and normalize strategy data from CSV (any supported format).
+    
+    CHANGED: Uses csv_adapter to handle both formats
+    RETURNS: Normalized df with standard columns
+    """
     try:
-        # Read only needed columns
-        df = pd.read_csv(filepath, usecols=REQUIRED_COLUMNS)
-
-        # Convert dates
-        df["Date"] = pd.to_datetime(df["Date"])
-        df["Ex. date"] = pd.to_datetime(df["Ex. date"])
-
-        # Extract strategy name from filename (e.g., AMS_7.csv -> AMS_7)
-        strategy_name = filepath.stem
-        df["Strategy"] = strategy_name
-
-        # Keep only relevant columns
-        df = df[["Strategy", "Symbol", "Date", "Ex. date", "Profit", "Position value"]]
-
+        # Load and normalize using adapter
+        df, metadata = load_and_normalize_csv(filepath)
+        
+        # Rename columns to match original schema
+        df = df.rename(columns={
+            'EntryDate': 'Date',
+            'ExitDate': 'Ex. date',
+            'PnL': 'Profit',
+            'PositionValue': 'Position value'
+        })
+        
+        # Add Strategy column if missing
+        if 'Strategy' not in df.columns:
+            df['Strategy'] = filepath.stem.split('_')[0]
+        
         return df
-
+        
+    except CSVFormatError as e:
+        raise ValueError(f"Error loading {filepath.name}: {str(e)}")
     except Exception as e:
         raise ValueError(f"Error loading {filepath.name}: {str(e)}")

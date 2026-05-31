@@ -613,19 +613,20 @@ def debug_annualized_calculation(trades_df, strategy_name=None, verbose=True):
 
 def calculate_monthly_gain_to_pain(monthly_returns_df: pd.DataFrame) -> float:
     """
-    Calculate Schwager-style monthly Gain-to-Pain Ratio.
+    Calculate monthly Gain-to-Pain Ratio using the Peter Brandt / Jack Schwager definition.
 
     Formula:
-        sum(positive monthly returns) / abs(sum(negative monthly returns))
+        sum(all monthly returns) / abs(sum(negative monthly returns))
 
     Expected input:
         DataFrame with a "Return %" column, where each row represents one month.
 
     Notes:
         - This is monthly return based, not trade based.
-        - Trade-based Gain-to-Pain is effectively Profit Factor.
+        - Numerator is net cumulative monthly return, not only positive months.
+        - To be meaningful, this should ideally cover at least three years.
         - If there are gains but no losing months, returns np.inf.
-        - If there are no gains and no losses, returns 0.0.
+        - If total return is zero and there are no losing months, returns 0.0.
     """
     if monthly_returns_df is None or monthly_returns_df.empty:
         return 0.0
@@ -644,10 +645,10 @@ def calculate_monthly_gain_to_pain(monthly_returns_df: pd.DataFrame) -> float:
     if monthly_returns.empty:
         return 0.0
 
-    total_gains = monthly_returns[monthly_returns > 0].sum()
-    total_losses = monthly_returns[monthly_returns < 0].sum()
+    total_net_return = monthly_returns.sum()
+    total_monthly_losses = monthly_returns[monthly_returns < 0].sum()
 
-    if total_losses == 0:
-        return np.inf if total_gains > 0 else 0.0
+    if total_monthly_losses == 0:
+        return np.inf if total_net_return > 0 else 0.0
 
-    return float(total_gains / abs(total_losses))
+    return float(total_net_return / abs(total_monthly_losses))
